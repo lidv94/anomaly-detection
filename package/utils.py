@@ -8,7 +8,7 @@ import pytz
 from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
-import boto3
+# import boto3
 
 
 class DotDict:
