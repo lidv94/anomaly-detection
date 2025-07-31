@@ -1,7 +1,14 @@
 import pandas as pd
 import numpy as np
+import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report
+from mpl_toolkits.mplot3d import Axes3D  # Only used if 3D
 
 # 1. Generate mock data
 def generate_mock_data(n_sales=300, n_rules=10, fraud_ratio=0.05, seed=42):
@@ -67,11 +74,6 @@ def prepare_data(df, timeunit='l3', scale=True):
     return X_train, X_test, y_test, scaler
 
 
-
-import random
-import numpy as np
-import torch
-
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -83,9 +85,6 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
-import torch
-import torch.nn as nn
 
 class Autoencoder(nn.Module):
     """Autoencoder neural network with customizable architecture.
@@ -181,12 +180,6 @@ class Autoencoder(nn.Module):
             print(f"Latent embedding: {x.shape}")
         return x
 
-
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import matplotlib.pyplot as plt
 
 def train_autoencoder(model, 
                       X_train, 
@@ -308,7 +301,7 @@ def plot_learning_curve(train_losses, val_losses):
     plt.show()
 
 
-from sklearn.metrics import classification_report
+
 
 def detect_anomalies(model, X_test, y_test, threshold_quantile=95):
     """
@@ -340,7 +333,6 @@ def detect_anomalies(model, X_test, y_test, threshold_quantile=95):
     print(classification_report(y_test, predicted_fraud))
     return recon_error, predicted_fraud
 
-import torch
 
 def extract_embeddings(model, X):
     """
@@ -364,8 +356,6 @@ def extract_embeddings(model, X):
     return embeddings
 
 
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # Only used if 3D
 
 def plot_latent_space(embeddings, 
                       y_test=None, 
