@@ -8,7 +8,11 @@ import pytz
 from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
+<<<<<<< HEAD
 # import boto3
+=======
+import boto3
+>>>>>>> adf012660f1047d629039d8e55346312dbb0d79e
 
 
 class DotDict:
