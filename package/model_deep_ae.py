@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score, fbeta_score
+from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score, fbeta_score,confusion_matrix
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.model_selection import train_test_split
@@ -154,7 +154,13 @@ def split_train_test(df, pk="sales_id", target="flag_fraud", test_size=0.2, rand
 
 
 @timer    
-def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_fraud", val_size=0.2, random_state=42):
+def prepare_train_val_test_data(train_df, 
+                                test_df, 
+                                pk="sales_id", 
+                                target="flag_fraud",
+                                val_size=0.2, 
+                                random_state=42, 
+                                scale=False):
     """
     Prepare training, validation, and testing data for novelty detection.
     
@@ -176,6 +182,8 @@ def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_f
         Fraction of non-fraud training data to use for validation.
     random_state : int, default 42
         Random seed for reproducibility.
+    scale : bool, default False
+        Whether to scale features using StandardScaler.
         
     Returns
     -------
@@ -205,13 +213,18 @@ def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_f
     # Separate features (drop primary key and target)
     X_train = pure_train_nonfraud.drop(columns=[pk, target])
     X_val = val_nonfraud.drop(columns=[pk, target])
-
-    # Test set: all samples (fraud + non-fraud)
     X_test = test_df.drop(columns=[pk, target])
     y_test = test_df[target].copy()
 
-    return X_train, X_val, X_test, y_test
+    # Optional scaling
+    # zero mean, unit variance ((x - mean)/std). Works well for most cases.
+    if scale:
+        scaler = StandardScaler()
+        X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+        X_val = pd.DataFrame(scaler.transform(X_val), columns=X_val.columns, index=X_val.index)
+        X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
 
+    return X_train, X_val, X_test, y_test
 
 class Autoencoder(nn.Module):
     """Autoencoder neural network with customizable architecture."""
