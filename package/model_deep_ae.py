@@ -3,14 +3,16 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score, fbeta_score
+from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score,fbeta_score,confusion_matrix
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 import random
 from mpl_toolkits.mplot3d import Axes3D  # Only used if 3D
 from package.utils import timer
 import time 
+from tqdm import tqdm
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -86,9 +88,8 @@ def expand_rule_columns(df, rule_prefix="rule_"):
 
     return df_wide
 
-    
 @timer    
-def subset_by_timeunit(df, timeunits):
+def subset_by_timeunit(df, timeunits,keep_cols_list=["sales_id", "flag_fraud"]):
     """
     Subset DataFrame to only include sales_id, flag_fraud, 
     and rule columns for the selected timeunit(s).
@@ -110,7 +111,7 @@ def subset_by_timeunit(df, timeunits):
         timeunits = [timeunits]
 
     # Always keep these
-    keep_cols = ["sales_id", "flag_fraud"]
+    keep_cols = keep_cols_list 
 
     # Add rule columns for each timeunit
     for t in timeunits:
@@ -155,7 +156,13 @@ def split_train_test(df, pk="sales_id", target="flag_fraud", test_size=0.2, rand
 
 
 @timer    
-def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_fraud", val_size=0.2, random_state=42):
+def prepare_train_val_test_data(train_df, 
+                                test_df, 
+                                pk="sales_id", 
+                                target="flag_fraud",
+                                val_size=0.2, 
+                                random_state=42, 
+                                scale=False):
     """
     Prepare training, validation, and testing data for novelty detection.
     
@@ -177,6 +184,8 @@ def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_f
         Fraction of non-fraud training data to use for validation.
     random_state : int, default 42
         Random seed for reproducibility.
+    scale : bool, default False
+        Whether to scale features using StandardScaler.
         
     Returns
     -------
@@ -206,21 +215,28 @@ def prepare_train_val_test_data(train_df, test_df, pk="sales_id", target="flag_f
     # Separate features (drop primary key and target)
     X_train = pure_train_nonfraud.drop(columns=[pk, target])
     X_val = val_nonfraud.drop(columns=[pk, target])
-
-    # Test set: all samples (fraud + non-fraud)
     X_test = test_df.drop(columns=[pk, target])
     y_test = test_df[target].copy()
 
+    # Optional scaling
+    # zero mean, unit variance ((x - mean)/std). Works well for most cases.
+    if scale:
+        scaler = StandardScaler()
+        X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+        X_val = pd.DataFrame(scaler.transform(X_val), columns=X_val.columns, index=X_val.index)
+        X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
+
     return X_train, X_val, X_test, y_test
 
-
 class Autoencoder(nn.Module):
-    """Autoencoder neural network with customizable architecture."""
+    """Autoencoder neural network with customizable architecture and optional dropout."""
 
-    def __init__(self, input_dim, encoding_dim=4, hidden_layers=[8], activation=nn.ReLU, verbose=False):
+    def __init__(self, input_dim, encoding_dim=4, hidden_layers=[8], 
+                 activation=nn.ReLU, dropout=0.0, verbose=False):
         super(Autoencoder, self).__init__()
         self.verbose = verbose
         self.activation_cls = activation
+        self.dropout = dropout
 
         # Encoder
         encoder = []
@@ -228,6 +244,8 @@ class Autoencoder(nn.Module):
         for idx, h in enumerate(hidden_layers):
             encoder.append(nn.Linear(prev_dim, h))
             encoder.append(activation())
+            if dropout > 0:
+                encoder.append(nn.Dropout(p=dropout)) 
             prev_dim = h
         encoder.append(nn.Linear(prev_dim, encoding_dim))
         self.encoder = nn.Sequential(*encoder)
@@ -238,6 +256,8 @@ class Autoencoder(nn.Module):
         for idx, h in enumerate(reversed(hidden_layers)):
             decoder.append(nn.Linear(prev_dim, h))
             decoder.append(activation())
+            if dropout > 0:
+                decoder.append(nn.Dropout(p=dropout)) 
             prev_dim = h
         decoder.append(nn.Linear(prev_dim, input_dim))
         self.decoder = nn.Sequential(*decoder)
@@ -645,3 +665,84 @@ def append_experiment_results(base_df, y_pred, experiment_name, id_col='sales_id
     # Merge on ID to keep existing columns and add new one
     merged_df = base_df.merge(new_df, on=id_col)
     return merged_df
+
+
+@timer
+# evaluate_fraud_predictions
+def evaluate_fraud_predictions(x_scaled, df_lables ,true_fraud_list):
+    print('Total input:', df_lables.shape[0])
+    df_lables['true_fraud'] = 0
+    df_lables.loc[df_lables.index.isin(true_fraud_list), 'true_fraud'] = 1
+    y_true = df_lables['true_fraud']
+    df_lables = df_lables.drop(columns='true_fraud')
+    
+    # Create an empty list to collect results
+    results = []
+
+    for col in tqdm(df_lables.columns):
+        
+        y_pred = df_lables[col]
+        # print(f'ypred{y_pred}')
+        # print(f'ytrue{y_true}')
+        cm = confusion_matrix(y_true, y_pred)
+        tn, fp, fn, tp = cm.ravel()
+
+        # print('-------' + col + '-------')
+        # print("Confusion Matrix:")
+        # print(pd.DataFrame(cm, index=['Actual 0', 'Actual 1'], columns=['Predicted 0', 'Predicted 1']))
+        
+        noise_count = np.sum(y_pred == 1)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f05 = fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)
+        f1 = fbeta_score(y_true, y_pred, beta=1, zero_division=0)
+        # score = silhouette_score(x_scaled, y_pred) # ks or js -> พวก kl
+
+        # Store results in the list
+        results.append({
+            'experiments': col,
+            'total_alert': noise_count,
+            'tp': tp,
+            'fp': fp,
+            'tn': tn,
+            'fn': fn,
+            'precision': precision,
+            'recall': recall,
+            'f0.5': f05,
+            'f1': f1
+            # ,'Silhouette_Score':score
+        })
+
+    # Convert the results into a DataFrame
+    results_df = pd.DataFrame(results)
+
+    return results_df
+
+#### add loop each percentile ####
+def evaluate_thresholds(x_scaled, test_df,y_test, recon_error, true_fraud_list, 
+                        exp_name ='default_all' ,                       
+                        percentiles=None):
+    if percentiles is None:
+        percentiles = [10,20,30,40,50,60,70,80,85,90,95,97,99]
+
+    df_lables_all = pd.DataFrame(index=test_df['sales_id'])
+
+    for p in percentiles:
+        # threshold = np.percentile(recon_error, p)
+        threshold = np.percentile(recon_error[y_test == 0], p)
+        y_pred = flag_anomalies(recon_error, threshold)
+
+        experiment_name = 'ae_' + exp_name + f'_p{p}'
+        df_labels_tmp = create_pack_results(test_df, y_pred, experiment_name=experiment_name)
+        df_labels_tmp = df_labels_tmp.set_index('sales_id')
+
+        df_lables_all[experiment_name] = df_labels_tmp[experiment_name]
+
+    # Run evaluation on all thresholds at once
+    results_df = evaluate_fraud_predictions(
+        x_scaled=x_scaled,
+        df_lables=df_lables_all.copy(),
+        true_fraud_list=true_fraud_list
+    )
+
+    return results_df
