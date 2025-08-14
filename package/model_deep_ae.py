@@ -3,14 +3,16 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score, fbeta_score,confusion_matrix
+from sklearn.metrics import roc_auc_score, classification_report,accuracy_score,precision_score, recall_score,fbeta_score,confusion_matrix
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 import random
 from mpl_toolkits.mplot3d import Axes3D  # Only used if 3D
 from package.utils import timer
 import time 
+from tqdm import tqdm
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -227,12 +229,14 @@ def prepare_train_val_test_data(train_df,
     return X_train, X_val, X_test, y_test
 
 class Autoencoder(nn.Module):
-    """Autoencoder neural network with customizable architecture."""
+    """Autoencoder neural network with customizable architecture and optional dropout."""
 
-    def __init__(self, input_dim, encoding_dim=4, hidden_layers=[8], activation=nn.ReLU, verbose=False):
+    def __init__(self, input_dim, encoding_dim=4, hidden_layers=[8], 
+                 activation=nn.ReLU, dropout=0.0, verbose=False):
         super(Autoencoder, self).__init__()
         self.verbose = verbose
         self.activation_cls = activation
+        self.dropout = dropout
 
         # Encoder
         encoder = []
@@ -240,6 +244,8 @@ class Autoencoder(nn.Module):
         for idx, h in enumerate(hidden_layers):
             encoder.append(nn.Linear(prev_dim, h))
             encoder.append(activation())
+            if dropout > 0:
+                encoder.append(nn.Dropout(p=dropout)) 
             prev_dim = h
         encoder.append(nn.Linear(prev_dim, encoding_dim))
         self.encoder = nn.Sequential(*encoder)
@@ -250,6 +256,8 @@ class Autoencoder(nn.Module):
         for idx, h in enumerate(reversed(hidden_layers)):
             decoder.append(nn.Linear(prev_dim, h))
             decoder.append(activation())
+            if dropout > 0:
+                decoder.append(nn.Dropout(p=dropout)) 
             prev_dim = h
         decoder.append(nn.Linear(prev_dim, input_dim))
         self.decoder = nn.Sequential(*decoder)
@@ -657,15 +665,6 @@ def append_experiment_results(base_df, y_pred, experiment_name, id_col='sales_id
     # Merge on ID to keep existing columns and add new one
     merged_df = base_df.merge(new_df, on=id_col)
     return merged_df
-
-
-##### fai's ######
-import pandas as pd
-import numpy as np
-from sklearn.metrics import confusion_matrix, precision_score, recall_score, fbeta_score
-# from sklearn.metrics import silhouette_score
-from package.utils import timer
-from tqdm import tqdm
 
 
 @timer
