@@ -13,6 +13,9 @@ from mpl_toolkits.mplot3d import Axes3D  # Only used if 3D
 from package.utils import timer
 import time 
 from tqdm import tqdm
+import os
+import pickle
+from datetime import datetime
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -354,6 +357,179 @@ def train_autoencoder(model,
     return model, train_losses, val_losses
 
 @timer
+def save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir, prefix="checkpoint"):
+    """
+    Save model checkpoint as .pkl artifact with training state.
+    """
+    os.makedirs(run_dir, exist_ok=True)
+    checkpoint_data = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "train_losses": train_losses,
+        "val_losses": val_losses
+    }
+    file_path = os.path.join(run_dir, f"{prefix}_epoch{epoch}.pkl")
+    with open(file_path, 'wb') as f:
+        pickle.dump(checkpoint_data, f)
+    print(f"✅ Saved checkpoint: {file_path}")
+    
+    
+@timer
+def load_checkpoint(file_path, model, optimizer):
+    """
+    Load model & optimizer state from checkpoint.
+    Returns: start_epoch, train_losses, val_losses, run_dir
+    """
+    with open(file_path, 'rb') as f:
+        checkpoint_data = pickle.load(f)
+
+    model.load_state_dict(checkpoint_data["model_state"])
+    optimizer.load_state_dict(checkpoint_data["optimizer_state"])
+    run_dir = os.path.dirname(file_path)
+
+    print(f"🔄 Loaded checkpoint from {file_path} (epoch {checkpoint_data['epoch']})")
+
+    return (checkpoint_data["epoch"], 
+            checkpoint_data["train_losses"], 
+            checkpoint_data["val_losses"],
+            run_dir)
+
+@timer
+def train_autoencoder_checkpoint(model, 
+                                 X_train, 
+                                 X_val,
+                                 epochs=50, 
+                                 batch_size=32, 
+                                 lr=1e-3,
+                                 checkpoint_every=100,
+                                 checkpoint_path=None,
+                                 run_dir=None,
+                                 early_stopping_patience=None,  # None disables early stop
+                                 weight_decay=0.0,             # L2 regularization
+                                 sparsity_lambda=0.0,          # Sparsity penalty
+                                 verbose=True):
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    # Prepare data
+    X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
+    X_val   = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
+
+    train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
+    val_loader   = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
+
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    start_epoch = 0
+    train_losses, val_losses = [], []
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+
+    # --- Resume logic ---
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        start_epoch, train_losses, val_losses, run_dir = load_checkpoint(checkpoint_path, model, optimizer)
+        start_epoch += 1
+    else:
+        if run_dir is None:
+            run_dir = f"model_checkpoint_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        else:
+            run_dir = os.path.join(run_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(run_dir, exist_ok=True)
+
+    for epoch in range(start_epoch, epochs):
+        # --- Training ---
+        model.train()
+        train_loss = 0.0
+        for batch in train_loader:
+            batch = batch.to(device)
+            optimizer.zero_grad()
+            output = model(batch)
+            mse_loss = criterion(output, batch)
+            
+            # --- Sparsity regularization ---
+            if sparsity_lambda > 0.0:
+                latent = model.encode(batch)  # get latent representation
+                sparsity_loss = sparsity_lambda * torch.mean(torch.abs(latent))
+                loss = mse_loss + sparsity_loss
+            else:
+                loss = mse_loss
+
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        # --- Validation ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(device)
+                output = model(batch)
+                mse_loss = criterion(output, batch)
+                
+                if sparsity_lambda > 0.0:
+                    latent = model.encode(batch)
+                    sparsity_loss = sparsity_lambda * torch.mean(torch.abs(latent))
+                    loss = mse_loss + sparsity_loss
+                else:
+                    loss = mse_loss
+
+                val_loss += loss.item()
+
+        avg_train_loss = train_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+
+        if verbose:
+            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # --- Save checkpoint ---
+        if (epoch + 1) % checkpoint_every == 0:
+            save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir)
+
+        # --- Early stopping ---
+        if early_stopping_patience is not None:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                epochs_no_improve = 0
+                torch.save(model.state_dict(), os.path.join(run_dir, "best_model.pth"))
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= early_stopping_patience:
+                    if verbose:
+                        print(f"Early stopping at epoch {epoch+1}")
+                    break
+
+    return model, train_losses, val_losses
+
+
+@timer
+def load_pickled_autoencoder(checkpoint_path, model=None, device=None):
+    """
+    Load a pickled autoencoder checkpoint saved with pickle.dump().
+    """
+    if device is None:
+        device = torch.device('cpu')
+
+    with open(checkpoint_path, "rb") as f:
+        checkpoint = pickle.load(f)
+
+    train_losses = checkpoint.get("train_losses", None)
+    val_losses = checkpoint.get("val_losses", None)
+    last_epoch = checkpoint.get("epoch", None)
+
+    if model is not None and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+
+    return model, train_losses, val_losses, last_epoch
+
+
+@timer
 def plot_learning_curve(train_losses, val_losses):
     plt.figure(figsize=(8, 5))
     plt.plot(train_losses, label='Train Loss')
@@ -439,7 +615,7 @@ def plot_threshold_vs_metric_percentile(y_true, recon_error, percentiles=None, m
 
 
 @timer
-# 3. Flag anomalies based on a chosen threshold
+# Flag anomalies based on a chosen threshold
 def flag_anomalies(recon_error, threshold):
     """
     Flag samples as anomaly/fraud if recon_error > threshold.
@@ -624,7 +800,9 @@ def plot_latent_space(embeddings,
         plt.show()
         
 @timer
-def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'):
+def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'
+                        # ,date_col = 'expected_dt'
+                       ):
     """
     Create a wide-format DataFrame with sales_id and one experiment column for predictions.
 
@@ -639,6 +817,7 @@ def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'):
     """
     df_results = pd.DataFrame({
         id_col: test_df[id_col].values,
+        # date_col:test_df[date_col].values,
         experiment_name: y_pred
     })
     return df_results
@@ -674,7 +853,7 @@ def evaluate_fraud_predictions(x_scaled, df_lables ,true_fraud_list):
     df_lables['true_fraud'] = 0
     df_lables.loc[df_lables.index.isin(true_fraud_list), 'true_fraud'] = 1
     y_true = df_lables['true_fraud']
-    df_lables = df_lables.drop(columns='true_fraud')
+    df_lables = df_lables.drop(columns=['true_fraud'])
     
     # Create an empty list to collect results
     results = []
@@ -718,15 +897,16 @@ def evaluate_fraud_predictions(x_scaled, df_lables ,true_fraud_list):
 
     return results_df
 
+@timer
 #### add loop each percentile ####
 def evaluate_thresholds(x_scaled, test_df,y_test, recon_error, true_fraud_list, 
-                        exp_name ='default_all' ,                       
-                        percentiles=None):
+                        exp_name ='default_all' ,               
+                        percentiles=None,
+                       ):
     if percentiles is None:
         percentiles = [10,20,30,40,50,60,70,80,85,90,95,97,99]
 
     df_lables_all = pd.DataFrame(index=test_df['sales_id'])
-
     for p in percentiles:
         # threshold = np.percentile(recon_error, p)
         threshold = np.percentile(recon_error[y_test == 0], p)
