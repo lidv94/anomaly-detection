@@ -16,6 +16,12 @@ from tqdm import tqdm
 import os
 import pickle
 from datetime import datetime
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from sklearn.manifold import TSNE
+
+
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -395,6 +401,117 @@ def load_checkpoint(file_path, model, optimizer):
             checkpoint_data["val_losses"],
             run_dir)
 
+
+# --- Loss function selector ---
+def get_loss_function(loss_name: str):
+    """
+    Return a PyTorch loss function based on the provided name.
+
+    Recommended usage in anomaly detection / autoencoder training:
+
+    - "mse": Mean Squared Error (default for autoencoders).  
+        Use when input and output are continuous and you want to minimize squared reconstruction errors.  
+        Common for anomaly detection with numeric features.
+
+    - "mae": Mean Absolute Error.  
+        More robust to outliers compared to MSE.  
+        Use when your data has heavy-tailed noise or you want absolute deviation instead of squared error.
+
+    - "huber" / "smoothl1": Huber Loss (Smooth L1).  
+        A compromise between MSE and MAE.  
+        Use when you want robustness to outliers but still care about squared error for small deviations.
+
+    - "bce": Binary Cross Entropy.  
+        Use when reconstructing binary input features (e.g., one-hot encoded categorical variables).
+
+    - "bce_logits": BCE with Logits.  
+        Same as BCE but more numerically stable (expects raw logits instead of probabilities).  
+        Use for binary features when your decoder does not apply a sigmoid activation.
+
+    - "kldiv": Kullback-Leibler Divergence.  
+        Often used in Variational Autoencoders (VAE) for regularization.  
+        Not usually applied to plain reconstruction error, but combined with another loss.
+
+    - "cosine": Cosine Embedding Loss.  
+        Use when you care about the *direction* (cosine similarity) of the reconstructed vector rather than magnitude.  
+        Less common, but can be useful when embeddings are normalized or when angular similarity is more meaningful.
+
+    Parameters
+    ----------
+    loss_name : str
+        Name of the loss function (e.g., "mse", "mae", "huber", "bce", "bce_logits", "kldiv", "cosine").
+
+    Returns
+    -------
+    torch.nn.Module
+        Corresponding PyTorch loss function.
+
+    Raises
+    ------
+    ValueError
+        If the provided loss_name is not supported.
+    """
+    loss_name = loss_name.lower()
+
+    if loss_name == "mse":
+        return nn.MSELoss()
+    elif loss_name == "mae":
+        return nn.L1Loss()
+    elif loss_name in ["huber", "smoothl1"]:
+        return nn.SmoothL1Loss(beta=1.0)
+    elif loss_name == "bce":
+        return nn.BCELoss()
+    elif loss_name == "bce_logits":
+        return nn.BCEWithLogitsLoss()
+    elif loss_name == "kldiv":
+        return nn.KLDivLoss(reduction="batchmean")
+    elif loss_name == "cosine":
+        return nn.CosineEmbeddingLoss()
+    else:
+        raise ValueError(
+            f"Unknown loss function: {loss_name}. "
+            f"Choose from ['mse', 'mae', 'huber', 'bce', 'bce_logits', 'kldiv', 'cosine']"
+        )
+
+# --- Optimizer selector for autoencoders ---
+def get_optimizer(model: nn.Module, optimizer_name: str = "adam", lr: float = 1e-3, weight_decay: float = 0.0):
+    """
+    Return a PyTorch optimizer for autoencoder training.
+
+    | Optimizer                     | Description / When to Use                                                                 |
+    | ----------------------------- | ----------------------------------------------------------------------------------------- |
+    | **Adam** (`optim.Adam`)       | Default choice; adaptive LR, stable, fast.                                               |
+    | **AdamW** (`optim.AdamW`)     | Variant of Adam with better weight decay handling; improves regularization.              |
+    | **RMSProp** (`optim.RMSprop`) | Helps stabilize training if gradients are noisy; sometimes useful for deeper autoencoders. |
+
+    Parameters
+    ----------
+    model : nn.Module
+        Model to optimize.
+    optimizer_name : str
+        Name of optimizer ("adam", "adamw", "rmsprop").
+    lr : float
+        Learning rate.
+    weight_decay : float
+        L2 regularization.
+
+    Returns
+    -------
+    torch.optim.Optimizer
+    """
+    optimizer_name = optimizer_name.lower()
+    if optimizer_name == "adam":
+        return optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    elif optimizer_name == "adamw":
+        return optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    elif optimizer_name == "rmsprop":
+        return optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        raise ValueError(
+            f"Unknown optimizer: {optimizer_name}. Choose from ['adam', 'adamw', 'rmsprop']"
+        )
+        
+# --- Training function ---
 @timer
 def train_autoencoder_checkpoint(model, 
                                  X_train, 
@@ -405,13 +522,16 @@ def train_autoencoder_checkpoint(model,
                                  checkpoint_every=100,
                                  checkpoint_path=None,
                                  run_dir=None,
-                                 early_stopping_patience=None,  # None disables early stop
-                                 weight_decay=0.0,             # L2 regularization
-                                 sparsity_lambda=0.0,          # Sparsity penalty
+                                 early_stopping_patience=None,
+                                 weight_decay=0.0,
+                                 sparsity_lambda=0.0,
+                                 loss_name="mae", 
+                                 optimizer_name="adam",
                                  verbose=True):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+    print(f"[INFO] Using device: {device}")
 
     # Prepare data
     X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
@@ -420,8 +540,13 @@ def train_autoencoder_checkpoint(model,
     train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
     val_loader   = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
 
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # --- Flexible loss ---
+    criterion = get_loss_function(loss_name)
+    print(f"[INFO] Using loss function: {criterion.__class__.__name__}")
+    
+    # --- Flexible optimizer ---
+    optimizer = get_optimizer(model, optimizer_name=optimizer_name, lr=lr, weight_decay=weight_decay)
+    print(f"[INFO] Using optimizer: {optimizer.__class__.__name__}")
 
     start_epoch = 0
     train_losses, val_losses = [], []
@@ -447,15 +572,15 @@ def train_autoencoder_checkpoint(model,
             batch = batch.to(device)
             optimizer.zero_grad()
             output = model(batch)
-            mse_loss = criterion(output, batch)
+            base_loss = criterion(output, batch)
             
             # --- Sparsity regularization ---
             if sparsity_lambda > 0.0:
                 latent = model.encode(batch)  # get latent representation
                 sparsity_loss = sparsity_lambda * torch.mean(torch.abs(latent))
-                loss = mse_loss + sparsity_loss
+                loss = base_loss + sparsity_loss
             else:
-                loss = mse_loss
+                loss = base_loss
 
             loss.backward()
             optimizer.step()
@@ -468,14 +593,14 @@ def train_autoencoder_checkpoint(model,
             for batch in val_loader:
                 batch = batch.to(device)
                 output = model(batch)
-                mse_loss = criterion(output, batch)
+                base_loss = criterion(output, batch)
                 
                 if sparsity_lambda > 0.0:
                     latent = model.encode(batch)
                     sparsity_loss = sparsity_lambda * torch.mean(torch.abs(latent))
-                    loss = mse_loss + sparsity_loss
+                    loss = base_loss + sparsity_loss
                 else:
-                    loss = mse_loss
+                    loss = base_loss
 
                 val_loss += loss.item()
 
@@ -798,6 +923,134 @@ def plot_latent_space(embeddings,
                       title="Latent Space")
         fig.colorbar(sc, label="Label")
         plt.show()
+
+# ----------------- 2D version -----------------
+@timer
+def plot_latent_space_2d(embeddings, y_test, y_pred, index_df=None, hover_col=None, marker_size=5, use_tsne=True):
+    """
+    Plot 2D latent space with ground truth and predicted labels side by side.
+    Fraud = red, Normal = blue, shared legend across subplots.
+    Hover shows index or specified column from index_df.
+    Automatically reduces embeddings >2D to 2D using t-SNE.
+
+    Parameters:
+    - embeddings: np.array of shape (n_samples, n_features)
+    - y_test: np.array of ground truth labels (0=Normal, 1=Fraud)
+    - y_pred: np.array of predicted labels (0=Normal, 1=Fraud)
+    - index_df: pd.DataFrame corresponding to embeddings for hover info (optional)
+    - hover_col: str, column in index_df to display on hover (optional)
+    - marker_size: int, size of markers
+    - use_tsne: bool, if True, reduce >2D embeddings to 2D using t-SNE
+    """
+
+    if embeddings.shape[1] > 2:
+        if use_tsne:
+            tsne = TSNE(n_components=2, random_state=42)
+            embeddings_2d = tsne.fit_transform(embeddings)
+        else:
+            raise ValueError("Embeddings have more than 2 dimensions. Set use_tsne=True to reduce them.")
+    else:
+        embeddings_2d = embeddings
+
+    df = pd.DataFrame(embeddings_2d, columns=['Dim1', 'Dim2'])
+    df['hover'] = index_df[hover_col].values if index_df is not None and hover_col is not None else df.index.astype(str)
+
+    color_map = {0: 'blue', 1: 'red'}
+    label_map = {0: 'Normal', 1: 'Fraud'}
+
+    def _add_scatter(fig, labels, row=1, col=1, first_occurrence=False):
+        labels = np.array(labels)
+        for val in [0, 1]:
+            idx = labels == val
+            color = color_map[val]
+            name = label_map[val]
+            showlegend = first_occurrence
+            hover = [f"{df.loc[i, 'hover']} (Class: {name})" for i in df.loc[idx].index]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df.loc[idx, 'Dim1'],
+                    y=df.loc[idx, 'Dim2'],
+                    mode='markers',
+                    marker=dict(color=color, size=marker_size),
+                    name=name,
+                    legendgroup=name,
+                    showlegend=showlegend,
+                    hovertext=hover,
+                    hoverinfo='text+name'
+                ),
+                row=row, col=col
+            )
+
+    # Always assume both y_test and y_pred are provided
+    fig = make_subplots(rows=1, cols=2,
+                        specs=[[{'type':'xy'}, {'type':'xy'}]],
+                        subplot_titles=("Latent Space (Ground Truth)", "Latent Space (Predicted)"))
+    _add_scatter(fig, y_test, row=1, col=1, first_occurrence=True)
+    _add_scatter(fig, y_pred, row=1, col=2, first_occurrence=False)
+
+    fig.update_layout(height=500, width=1000)
+    fig.show()
+
+# ----------------- 3D version -----------------
+@timer
+def plot_latent_space_3d(embeddings, y_test, y_pred, index_df=None, hover_col=None, marker_size=5):
+    """
+    Plot 3D latent space with ground truth and predicted labels.
+    Fraud = red, Normal = blue, shared legend across subplots.
+    Hover shows index or specified column from index_df.
+
+    Parameters:
+    - embeddings: np.array of shape (n_samples, 3)
+    - y_test: np.array of ground truth labels (0=Normal, 1=Fraud)
+    - y_pred: np.array of predicted labels (0=Normal, 1=Fraud)
+    - index_df: pd.DataFrame corresponding to embeddings for hover info (optional)
+    - hover_col: str, column in index_df to display on hover (optional)
+    """
+    if embeddings.shape[1] != 3:
+        raise ValueError("Embeddings must have 3 dimensions for 3D plot.")
+    
+    df = pd.DataFrame(embeddings, columns=['Dim1', 'Dim2', 'Dim3'])
+    df['hover'] = index_df[hover_col].values if index_df is not None and hover_col is not None else df.index.astype(str)
+
+    color_map = {0: 'blue', 1: 'red'}
+    label_map = {0: 'Normal', 1: 'Fraud'}
+
+    def _add_scatter3d(fig, labels, row=1, col=1, first_occurrence=False):
+        labels = np.array(labels)
+        for val in [0, 1]:
+            idx = labels == val
+            color = color_map[val]
+            name = label_map[val]
+            showlegend = first_occurrence
+            hover = [f"{df.loc[i, 'hover']} (Class: {name})" for i in df.loc[idx].index]
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=df.loc[idx, 'Dim1'],
+                    y=df.loc[idx, 'Dim2'],
+                    z=df.loc[idx, 'Dim3'],
+                    mode='markers',
+                    marker=dict(color=color, size=marker_size),
+                    name=name,
+                    legendgroup=name,
+                    showlegend=showlegend,
+                    hovertext=hover,
+                    hoverinfo='text+name'
+                ),
+                row=row, col=col
+            )
+
+    # Only handle the case where both y_test and y_pred are provided
+    fig = make_subplots(rows=1, cols=2,
+                        specs=[[{'type':'scatter3d'}, {'type':'scatter3d'}]],
+                        subplot_titles=("Latent Space (Ground Truth)", "Latent Space (Predicted)"))
+    _add_scatter3d(fig, y_test, row=1, col=1, first_occurrence=True)
+    _add_scatter3d(fig, y_pred, row=1, col=2, first_occurrence=False)
+    fig.update_layout(height=500, width=1000)
+    fig.show()
+
+
         
 @timer
 def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'
