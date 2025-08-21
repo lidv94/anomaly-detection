@@ -1179,3 +1179,105 @@ def evaluate_thresholds(x_scaled, test_df,y_test, recon_error, true_fraud_list,
     )
 
     return results_df
+
+################### Pipeline ########################
+# ----------------- Function 1: Training Pipeline -----------------
+@timer
+def run_training_pipeline(
+    model,
+    X_scaled_train,
+    X_scaled_val,
+    X_scaled_test,
+    test_df,
+    y_test,
+    true_fraud_list=None,
+    seed: int = 42,
+    epochs: int = 20,
+    checkpoint_every: int = 10,
+    early_stopping_patience: int = 10,
+    run_dir: str = "model_checkpoint",
+    loss_name: str = "mae",
+    optimizer_name: str = "adam"
+):
+    """
+    Train autoencoder, plot learning curve, create initial results, and evaluate thresholds.
+    Returns: trained_model, train_losses, val_losses, df_lables, res_thresholds
+    """
+    set_seed(seed)
+
+    trained_model, train_losses, val_losses = train_autoencoder_checkpoint(
+        model=model,
+        X_train=X_scaled_train,
+        X_val=X_scaled_val,
+        epochs=epochs,
+        checkpoint_every=checkpoint_every,
+        early_stopping_patience=early_stopping_patience,
+        run_dir=run_dir,
+        loss_name=loss_name,
+        optimizer_name=optimizer_name
+    )
+
+    plot_learning_curve(train_losses, val_losses)
+
+    y_pred_dummy = np.zeros_like(y_test)
+    df_lables = create_pack_results(test_df, y_pred_dummy, experiment_name='ae_all_1')
+    df_lables = df_lables.set_index('sales_id')
+    
+    recon_error = get_reconstruction_error(trained_model, X_scaled_test)
+    
+    res_thresholds = evaluate_thresholds(
+        x_scaled=X_scaled_test,
+        test_df=test_df,
+        y_test=y_test,
+        recon_error=recon_error,
+        true_fraud_list=true_fraud_list
+    )
+
+    return trained_model, train_losses, val_losses, df_lables, res_thresholds
+
+
+# ----------------- Function 2: Threshold & Plot Pipeline -----------------
+@timer
+def run_threshold_and_plot_pipeline(
+    trained_model,
+    X_scaled_test,
+    test_df,
+    y_test,
+    threshold_percentile: float = 95,
+    hover_col: str = 'sales_id'
+):
+    """
+    Compute reconstruction error, select threshold, flag anomalies, extract embeddings,
+    and plot 2D and 3D latent space.
+    Returns: recon_error, threshold, y_pred, embeddings
+    """
+    # 1. Compute reconstruction error
+    recon_error = get_reconstruction_error(trained_model, X_scaled_test)
+
+    # 2. Compute threshold manually (percentile on normal data)
+    threshold = np.percentile(recon_error[y_test == 0], threshold_percentile)
+    print(f"Selected threshold ({threshold_percentile} percentile): {threshold:.4f}")
+
+    # 3. Flag anomalies
+    y_pred = flag_anomalies(recon_error, threshold)
+
+    # 4. Extract embeddings
+    embeddings = extract_embeddings(trained_model, X_scaled_test)
+
+    # 5. Plot latent spaces
+    plot_latent_space_2d(
+        embeddings=embeddings,
+        y_test=y_test,
+        y_pred=y_pred,
+        index_df=test_df,
+        hover_col=hover_col
+    )
+    plot_latent_space_3d(
+        embeddings=embeddings,
+        y_test=y_test,
+        y_pred=y_pred,
+        index_df=test_df,
+        hover_col=hover_col
+    )
+
+    return recon_error, threshold, y_pred, embeddings
