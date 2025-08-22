@@ -666,19 +666,53 @@ def plot_learning_curve(train_losses, val_losses):
     plt.grid(True)
     plt.show()
 
+
 @timer
-# 1. Compute reconstruction error
-def get_reconstruction_error(model, X_test):
+def get_reconstruction_error(model, X_test, loss_name="mse"):
+    """
+    Compute per-sample reconstruction error for an autoencoder using the specified loss.
+
+    Parameters
+    ----------
+    model : nn.Module
+        Trained autoencoder.
+    X_test : np.array or pd.DataFrame
+        Test data.
+    loss_name : str
+        Loss function to use ("mse", "mae", "huber", etc.).
+
+    Returns
+    -------
+    np.array
+        Reconstruction error for each sample.
+    """
+    import torch
+    import numpy as np
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     model.to(device)
 
-    X_test_tensor = torch.tensor(X_test.values if hasattr(X_test, "values") else X_test, dtype=torch.float32).to(device)
+    X_tensor = torch.tensor(X_test.values if hasattr(X_test, "values") else X_test,
+                            dtype=torch.float32, device=device)
+    
+    loss_fn = get_loss_function(loss_name)
+    # Set reduction='none' for per-element loss
+    if hasattr(loss_fn, 'reduction'):
+        loss_fn.reduction = 'none'
+    
     with torch.no_grad():
-        X_pred = model(X_test_tensor).cpu().numpy()
+        X_pred = model(X_tensor)
+        # Compute element-wise loss
+        elem_loss = loss_fn(X_pred, X_tensor)
+        # Average over features to get per-sample reconstruction error
+        recon_error = elem_loss.mean(dim=1).cpu().numpy()
 
-    recon_error = np.mean(( (X_test.values if hasattr(X_test, "values") else X_test) - X_pred) ** 2, axis=1)
+    print(f"[INFO] Reconstruction error calculated using {loss_name.upper()} for {X_tensor.shape[0]} samples")
+    print(f"[INFO] Error stats -> min: {recon_error.min():.4f}, max: {recon_error.max():.4f}, mean: {recon_error.mean():.4f}")
+    
     return recon_error
+
 
 @timer
 def plot_threshold_vs_metric_percentile(y_true, recon_error, percentiles=None, metric='accuracy'):
@@ -839,20 +873,26 @@ def extract_embeddings(model, X):
 
     Parameters:
     - model: Autoencoder with `.encode()` method
-    - X: np.array (input data)
+    - X: np.array or pd.DataFrame (input data)
 
     Returns:
     - embeddings: np.array of shape (n_samples, encoding_dim)
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Using device: {device}")
+
     model.to(device)
     model.eval()
 
     X_tensor = torch.tensor(X.values if hasattr(X, "values") else X, dtype=torch.float32).to(device)
+    print(f"[INFO] Input shape: {X_tensor.shape}")
+
     with torch.no_grad():
         embeddings = model.encode(X_tensor).cpu().numpy()
 
+    print(f"[INFO] Extracted embeddings shape: {embeddings.shape}")
     return embeddings
+
 
 
 @timer
@@ -1223,7 +1263,7 @@ def run_training_pipeline(
     df_lables = create_pack_results(test_df, y_pred_dummy, experiment_name='ae_all_1')
     df_lables = df_lables.set_index('sales_id')
     
-    recon_error = get_reconstruction_error(trained_model, X_scaled_test)
+    recon_error = get_reconstruction_error(trained_model, X_scaled_test,loss_name=loss_name)
     
     res_thresholds = evaluate_thresholds(
         x_scaled=X_scaled_test,
