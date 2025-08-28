@@ -20,21 +20,37 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.manifold import TSNE
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 import io
 import boto3
 
 s3_client = boto3.client("s3")
 
+@timer
 def set_seed(seed=42):
+    # print(f"\n[INFO] Setting global seed to {seed}")
+
+    # Python random
     random.seed(seed)
+    # print(f"[INFO] Python random: {random.randint(0, 100)}")
+
+    # Numpy
     np.random.seed(seed)
+    # print(f"[INFO] NumPy random: {np.random.randint(0, 100)}")
+
+    # Torch
     torch.manual_seed(seed)
+    # print(f"[INFO] Torch random: {torch.randint(0, 100, (1,)).item()}")
+
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-    # For deterministic behavior (may slow down)
+        # print(f"[INFO] Torch CUDA random: {torch.randint(0, 100, (1,), device='cuda').item()}")
+
+    # Deterministic behavior
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    # print("[INFO] CUDNN deterministic set to True, benchmark set to False")
 
 @timer
 def generate_mock_data(n_sales=300, n_rules=10, fraud_ratio=0.05, seed=42):
@@ -302,67 +318,67 @@ class Autoencoder(nn.Module):
             print(f"Latent embedding: {x.shape}")
         return x
 
-@timer
-def train_autoencoder(model, 
-                      X_train, 
-                      X_val,
-                      epochs=50, 
-                      batch_size=32, 
-                      lr=1e-3,
-                      verbose=True):
-    """
-    Train autoencoder with explicit train and val sets (no internal splitting).
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+# @timer
+# def train_autoencoder(model, 
+#                       X_train, 
+#                       X_val,
+#                       epochs=50, 
+#                       batch_size=32, 
+#                       lr=1e-3,
+#                       verbose=True):
+#     """
+#     Train autoencoder with explicit train and val sets (no internal splitting).
+#     """
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model.to(device)
 
-    # Convert to tensors
-    # X_train = torch.tensor(X_train, dtype=torch.float32)
-    # X_val = torch.tensor(X_val, dtype=torch.float32)
-    X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
-    X_val = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
+#     # Convert to tensors
+#     # X_train = torch.tensor(X_train, dtype=torch.float32)
+#     # X_val = torch.tensor(X_val, dtype=torch.float32)
+#     X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
+#     X_val = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
 
 
-    train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
+#     train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
+#     val_loader = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
 
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+#     criterion = nn.MSELoss()
+#     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    train_losses = []
-    val_losses = []
+#     train_losses = []
+#     val_losses = []
 
-    for epoch in range(epochs):
-        model.train()
-        train_loss = 0.0
-        for batch in train_loader:
-            batch = batch.to(device)
-            optimizer.zero_grad()
-            output = model(batch)
-            loss = criterion(output, batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
+#     for epoch in range(epochs):
+#         model.train()
+#         train_loss = 0.0
+#         for batch in train_loader:
+#             batch = batch.to(device)
+#             optimizer.zero_grad()
+#             output = model(batch)
+#             loss = criterion(output, batch)
+#             loss.backward()
+#             optimizer.step()
+#             train_loss += loss.item()
 
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for batch in val_loader:
-                batch = batch.to(device)
-                output = model(batch)
-                loss = criterion(output, batch)
-                val_loss += loss.item()
+#         model.eval()
+#         val_loss = 0.0
+#         with torch.no_grad():
+#             for batch in val_loader:
+#                 batch = batch.to(device)
+#                 output = model(batch)
+#                 loss = criterion(output, batch)
+#                 val_loss += loss.item()
 
-        avg_train_loss = train_loss / len(train_loader)
-        avg_val_loss = val_loss / len(val_loader)
+#         avg_train_loss = train_loss / len(train_loader)
+#         avg_val_loss = val_loss / len(val_loader)
 
-        train_losses.append(avg_train_loss)
-        val_losses.append(avg_val_loss)
+#         train_losses.append(avg_train_loss)
+#         val_losses.append(avg_val_loss)
 
-        if verbose:
-            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+#         if verbose:
+#             print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
-    return model, train_losses, val_losses
+#     return model, train_losses, val_losses
 
 #####################
 
@@ -394,7 +410,7 @@ def save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir, 
 
     if _is_s3_path(run_dir):
         bucket, prefix_key = _split_s3_path(run_dir)
-        key = os.path.join(prefix_key, filename)
+        key = f"{prefix_key}/{filename}" if prefix_key else filename
 
         buffer = io.BytesIO()
         pickle.dump(checkpoint_data, buffer)
@@ -411,10 +427,32 @@ def save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir, 
 
 
 @timer
-def load_checkpoint(file_path, model, optimizer):
+def load_checkpoint(file_path, model=None, optimizer=None, device=None):
     """
-    Load model & optimizer state from local disk or S3 checkpoint.
+    Load model & optimizer state from a checkpoint stored locally or in S3.
+
+    Parameters
+    ----------
+    file_path : str
+        Local path or S3 URI (e.g., "s3://bucket/key").
+    model : torch.nn.Module, optional
+        If provided, loads the state_dict into this model.
+    optimizer : torch.optim.Optimizer, optional
+        If provided, loads the optimizer state_dict.
+    device : torch.device, optional
+        Device to map model to. Defaults to CUDA if available, else CPU.
+
+    Returns
+    -------
+    start_epoch : int
+    train_losses : list
+    val_losses : list
+    run_dir : str
+        Directory or S3 path prefix where checkpoint was loaded from.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if _is_s3_path(file_path):
         bucket, key = _split_s3_path(file_path)
         buffer = io.BytesIO()
@@ -422,19 +460,26 @@ def load_checkpoint(file_path, model, optimizer):
         buffer.seek(0)
         checkpoint_data = pickle.load(buffer)
         print(f"🔄 Loaded checkpoint from S3: {file_path} (epoch {checkpoint_data['epoch']})")
+        run_dir = f"s3://{bucket}/{os.path.dirname(key)}"
     else:
         with open(file_path, "rb") as f:
             checkpoint_data = pickle.load(f)
         print(f"🔄 Loaded checkpoint locally: {file_path} (epoch {checkpoint_data['epoch']})")
+        run_dir = os.path.dirname(file_path)
 
-    model.load_state_dict(checkpoint_data["model_state"])
-    optimizer.load_state_dict(checkpoint_data["optimizer_state"])
-    run_dir = os.path.dirname(file_path)
+    if model is not None and "model_state" in checkpoint_data:
+        model.load_state_dict(checkpoint_data["model_state"])
+        model.to(device)
 
-    return (checkpoint_data["epoch"],
-            checkpoint_data["train_losses"],
-            checkpoint_data["val_losses"],
-            run_dir)
+    if optimizer is not None and "optimizer_state" in checkpoint_data:
+        optimizer.load_state_dict(checkpoint_data["optimizer_state"])
+
+    return (
+        checkpoint_data["epoch"],
+        checkpoint_data.get("train_losses", []),
+        checkpoint_data.get("val_losses", []),
+        run_dir
+    )
 
 #####################
 
@@ -546,7 +591,19 @@ def get_optimizer(model: nn.Module, optimizer_name: str = "adam", lr: float = 1e
         raise ValueError(
             f"Unknown optimizer: {optimizer_name}. Choose from ['adam', 'adamw', 'rmsprop']"
         )
-        
+
+
+@timer
+def get_scheduler(optimizer, scheduler_name="plateau", factor=0.5, patience=5, step_size=10):
+    if scheduler_name.lower() == "plateau":
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience)
+    elif scheduler_name.lower() == "steplr":
+        scheduler = StepLR(optimizer, step_size=step_size, gamma=factor)
+    else:
+        scheduler = None
+    return scheduler
+
+
 # --- Training function ---
 @timer
 def train_autoencoder_checkpoint(model, 
@@ -563,18 +620,49 @@ def train_autoencoder_checkpoint(model,
                                  sparsity_lambda=0.0,
                                  loss_name="mae", 
                                  optimizer_name="adam",
+                                 scheduler_name="plateau",
+                                 scheduler_params=None, 
                                  verbose=True):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     print(f"[INFO] Using device: {device}")
 
+    # ---- Ensure reproducibility for DataLoader ----
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        print(f"[INFO] Worker {worker_id} seed -> Torch: {worker_seed}, "
+              f"Numpy: {np.random.randint(0, 100)}, Random: {random.randint(0, 100)}")
+
+    g = torch.Generator()
+    g.manual_seed(42)  # <- use the same seed as set_seed()
+
+    print("[INFO] DataLoader seed info:")
+    print(f"       Global generator manual_seed: 42")
+    print(f"       Torch initial seed: {torch.initial_seed()}")
+    print(f"       Generator state (deterministic): {torch.backends.cudnn.deterministic}")
+    print(f"       Benchmark mode: {torch.backends.cudnn.benchmark}")
+
     # Prepare data
     X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
-    X_val   = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
+    X_val = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
 
-    train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
-    val_loader   = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
+    train_loader = torch.utils.data.DataLoader(
+        X_train,
+        batch_size=batch_size,
+        shuffle=True,
+        worker_init_fn=seed_worker,  # <- NEW
+        generator=g                  # <- NEW
+    )
+    val_loader = torch.utils.data.DataLoader(
+        X_val,
+        batch_size=batch_size,
+        shuffle=False,
+        worker_init_fn=seed_worker,  # <- NEW
+        generator=g                  # <- NEW
+    )
 
     # --- Flexible loss ---
     criterion = get_loss_function(loss_name)
@@ -582,8 +670,31 @@ def train_autoencoder_checkpoint(model,
     
     # --- Flexible optimizer ---
     optimizer = get_optimizer(model, optimizer_name=optimizer_name, lr=lr, weight_decay=weight_decay)
-    print(f"[INFO] Using optimizer: {optimizer.__class__.__name__}")
+    last_lr = optimizer.param_groups[0]['lr']
+    print(f"[INFO] Using optimizer: {optimizer.__class__.__name__}, LR: {last_lr:.6f}")
 
+    # --- Scheduler setup ---
+    if scheduler_name is not None:
+        default_scheduler_params = {"factor": 0.5, "patience": 5, "step_size": 10}
+        if scheduler_params is None:
+            scheduler_params = default_scheduler_params
+        else:
+            for k, v in default_scheduler_params.items():
+                scheduler_params.setdefault(k, v)
+    
+        scheduler = get_scheduler(
+            optimizer,
+            scheduler_name=scheduler_name,
+            factor=scheduler_params.get("factor"),
+            patience=scheduler_params.get("patience"),
+            step_size=scheduler_params.get("step_size")
+        )
+        print(f"[INFO] Using scheduler: {scheduler.__class__.__name__} with params: {scheduler_params}" if scheduler is not None else "[INFO] Scheduler not used.")
+    else:
+        scheduler = None
+        print("[INFO] Scheduler not used.")
+
+    # --- cont epoch ---    
     start_epoch = 0
     train_losses, val_losses = [], []
     best_val_loss = float("inf")
@@ -598,7 +709,9 @@ def train_autoencoder_checkpoint(model,
             run_dir = f"model_checkpoint_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         else:
             run_dir = os.path.join(run_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
-        os.makedirs(run_dir, exist_ok=True)
+            if not _is_s3_path(run_dir):
+                os.makedirs(run_dir, exist_ok=True)
+
 
     for epoch in range(start_epoch, epochs):
         # --- Training ---
@@ -647,6 +760,20 @@ def train_autoencoder_checkpoint(model,
 
         if verbose:
             print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # --- Scheduler step ---
+        if scheduler is not None:
+            if scheduler_name.lower() == "plateau":
+                scheduler.step(avg_val_loss)
+            else:
+                scheduler.step()
+        
+        # --- Print LR only if changed ---
+        current_lr = optimizer.param_groups[0]['lr']
+        if current_lr != last_lr:
+            print(f"[INFO] Current LR: {current_lr:.6f}")
+            last_lr = current_lr
+
 
         # --- Save checkpoint ---
         if (epoch + 1) % checkpoint_every == 0:
@@ -1301,6 +1428,12 @@ def run_training_pipeline(
     """
     set_seed(seed)
 
+    # ---- Check input for NaNs ----
+    for name, X in zip(["X_train", "X_val", "X_test"], [X_scaled_train, X_scaled_val, X_scaled_test]):
+        if np.isnan(X).any():
+            raise ValueError(f"[ERROR] {name} contains NaN values!")
+
+    # ---- Train model ----
     trained_model, train_losses, val_losses = train_autoencoder_checkpoint(
         model=model,
         X_train=X_scaled_train,
@@ -1315,12 +1448,27 @@ def run_training_pipeline(
 
     plot_learning_curve(train_losses, val_losses)
 
+    # ---- Create dummy predictions ----
     y_pred_dummy = np.zeros_like(y_test)
+
+    # ---- Check model output for NaNs ----
+    trained_model.eval()
+    with torch.no_grad():
+        X_test_tensor = torch.tensor(X_scaled_test, dtype=torch.float32)
+        recon = trained_model(X_test_tensor)
+        if torch.isnan(recon).any():
+            raise ValueError("[ERROR] Autoencoder output contains NaN values!")
+
+    # ---- Create initial result dataframe ----
     df_lables = create_pack_results(test_df, y_pred_dummy, experiment_name=experiment_name)
     df_lables = df_lables.set_index('sales_id')
-    
+
+    # ---- Compute reconstruction error ----
     recon_error = get_reconstruction_error(trained_model, X_scaled_test, loss_name)
-    
+    if np.isnan(recon_error).any():
+        raise ValueError("[ERROR] Reconstruction error contains NaN values!")
+
+    # ---- Evaluate thresholds ----
     res_thresholds = evaluate_thresholds(
         x_scaled=X_scaled_test,
         test_df=test_df,
@@ -1330,6 +1478,7 @@ def run_training_pipeline(
     )
 
     return trained_model, train_losses, val_losses, df_lables, res_thresholds
+
 
 
 # ----------------- Function 2: Threshold & Plot Pipeline -----------------
