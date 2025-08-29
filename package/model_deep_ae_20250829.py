@@ -56,18 +56,28 @@ def set_seed(seed=42):
 def generate_mock_data(n_sales=300, n_rules=10, fraud_ratio=0.05, seed=42):
     np.random.seed(seed)
     
-    timeunits = ['l3', 'l6', 'l9' , 'l12', 'l24','l36']
+    timeunits = ['l3', 'l6', 'l9', 'l12', 'l24', 'l36']
     sales_ids = np.arange(n_sales)
     all_data = []
+
+    # Base date
+    base_date = pd.to_datetime("2025-06-30")
 
     # Assign fraud at sales_id level (consistent across timeunits)
     is_fraud = np.random.choice([0, 1], size=n_sales, p=[1-fraud_ratio, fraud_ratio])
     sales_id_fraud_map = dict(zip(sales_ids, is_fraud))
-    
+
+    # Assign expected date per sales_id (spread out for variety)
+    sales_id_date_map = {
+        s_id: base_date - pd.to_timedelta(np.random.randint(0, 365), unit="D")
+        for s_id in sales_ids
+    }
+
     for t in timeunits:
         for s_id in sales_ids:
             row = {
                 'sales_id': s_id,
+                'expected_dt': sales_id_date_map[s_id],
                 'timeunit': t,
                 'flag_fraud': sales_id_fraud_map[s_id]
             }
@@ -82,6 +92,7 @@ def generate_mock_data(n_sales=300, n_rules=10, fraud_ratio=0.05, seed=42):
     return df
 
 
+
 @timer    
 def expand_rule_columns(df, rule_prefix="rule_"):
     """
@@ -92,7 +103,7 @@ def expand_rule_columns(df, rule_prefix="rule_"):
     rule_cols = [col for col in df.columns if col.startswith(rule_prefix)]
 
     # Melt to long format
-    df_long = df.melt(id_vars=["sales_id", "timeunit", "flag_fraud"],
+    df_long = df.melt(id_vars=["sales_id",'expected_dt', "timeunit", "flag_fraud"],
                       value_vars=rule_cols,
                       var_name="rule",
                       value_name="value")
@@ -102,7 +113,7 @@ def expand_rule_columns(df, rule_prefix="rule_"):
 
     # Pivot to wide format
     df_wide = df_long.pivot(
-        index=["sales_id", "flag_fraud"],
+        index=["sales_id",'expected_dt', "flag_fraud"],
         columns="rule_time",
         values="value"
     )
@@ -116,7 +127,7 @@ def expand_rule_columns(df, rule_prefix="rule_"):
     return df_wide
 
 @timer    
-def subset_by_timeunit(df, timeunits,keep_cols_list=["sales_id", "flag_fraud"]):
+def subset_by_timeunit(df, timeunits,keep_cols_list=["sales_id",'expected_dt', "flag_fraud"]):
     """
     Subset DataFrame to only include sales_id, flag_fraud, 
     and rule columns for the selected timeunit(s).
@@ -151,27 +162,9 @@ def subset_by_timeunit(df, timeunits,keep_cols_list=["sales_id", "flag_fraud"]):
 
     
 @timer
-def split_train_test(df, pk="sales_id", target="flag_fraud", test_size=0.2, random_state=42):
+def split_train_test(df, pk="sales_id",date_col='expected_dt', target="flag_fraud", test_size=0.2, random_state=42):
     """
     Split the dataframe into train/test sets (80-20) stratified by target.
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame containing pk, target, and features.
-    pk : str
-        Primary key column name.
-    target : str
-        Target column name (flag_fraud).
-    test_size : float
-        Proportion of data to use as test set.
-    random_state : int
-        Random seed for reproducibility.
-        
-    Returns
-    -------
-    train_df : pd.DataFrame
-    test_df : pd.DataFrame
     """
     train_df, test_df = train_test_split(
         df, 
@@ -186,10 +179,11 @@ def split_train_test(df, pk="sales_id", target="flag_fraud", test_size=0.2, rand
 def prepare_train_val_test_data(train_df, 
                                 test_df, 
                                 pk="sales_id", 
+                                date_col="expected_dt",
                                 target="flag_fraud",
                                 val_size=0.2, 
                                 random_state=42, 
-                                scale=False):
+                                scale=True):
     """
     Prepare training, validation, and testing data for novelty detection.
     
@@ -205,6 +199,8 @@ def prepare_train_val_test_data(train_df,
         Testing DataFrame after initial train/test split.
     pk : str, default "sales_id"
         Primary key column name to drop from features.
+    date_col : str, default "expected_dt"
+        Date column name to drop from features.
     target : str, default "flag_fraud"
         Target column name.
     val_size : float, default 0.2
@@ -224,36 +220,80 @@ def prepare_train_val_test_data(train_df,
         Testing features containing all samples (fraud and non-fraud).
     y_test : pd.Series
         Testing target labels.
+    X_train_nonfraud : pd.DataFrame
+        Training (non-fraud only) features, scaled if requested.
+    y_train_nonfraud : pd.Series
+        Training (non-fraud only) target labels.
+    all_df : pd.DataFrame
+        Concatenated train_df and test_df.
+    X_all : pd.DataFrame
+        All features (scaled if requested).
+    y_all : pd.Series
+        All target labels.
     """
-    # Filter only non-fraud for training and validation
-    train_nonfraud = train_df[train_df[target] == 0]
+    # Separate features (drop primary key and target)
+    exclude_cols = {pk, date_col, target} & set(train_df.columns)
+    feature_cols = [c for c in train_df.columns if c not in exclude_cols]
+    
+    # Concatenate train + test for "all data"
+    all_df = pd.concat([train_df, test_df], ignore_index=True)
+    X_all = all_df[feature_cols]
+    y_all = all_df[target].copy()
 
-    # Split non-fraud training data into pure train and validation sets
+    # All train data (both fraud, nf)
+    train_all_df = train_df.copy()
+    X_train_all = train_all_df[feature_cols].reset_index(drop=True)
+    y_train_all = train_all_df[target].reset_index(drop=True)
+    
+    # Filter only non-fraud
+    train_nonfraud_df = train_df[train_df[target] == 0]
+    X_train_nonfraud = train_nonfraud_df[feature_cols].reset_index(drop=True)
+    y_train_nonfraud = train_nonfraud_df[target].reset_index(drop=True)
+
+    # ----- Split non-fraud training data into pure train and validation sets -----
     pure_train_nonfraud, val_nonfraud = train_test_split(
-        train_nonfraud,
+        train_nonfraud_df,
         test_size=val_size,
         random_state=random_state,
-        stratify=train_nonfraud[target]  # stratify even if all zeros for consistency
+        stratify=train_nonfraud_df[target]  # stratify even if all zeros for consistency
     )
 
     pure_train_nonfraud = pure_train_nonfraud.reset_index(drop=True)
     val_nonfraud = val_nonfraud.reset_index(drop=True)
-
-    # Separate features (drop primary key and target)
-    X_train = pure_train_nonfraud.drop(columns=[pk, target])
-    X_val = val_nonfraud.drop(columns=[pk, target])
-    X_test = test_df.drop(columns=[pk, target])
+    X_train = pure_train_nonfraud[feature_cols]
+    X_val = val_nonfraud[feature_cols]
+    X_test = test_df[feature_cols]
     y_test = test_df[target].copy()
 
+
     # Optional scaling
-    # zero mean, unit variance ((x - mean)/std). Works well for most cases.
     if scale:
         scaler = StandardScaler()
-        X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
-        X_val = pd.DataFrame(scaler.transform(X_val), columns=X_val.columns, index=X_val.index)
-        X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
+        X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=feature_cols, index=X_train.index) # Fit the scaler only on pure X_train (non-fraud).
+        X_val = pd.DataFrame(scaler.transform(X_val), columns=feature_cols, index=X_val.index)
+        X_test = pd.DataFrame(scaler.transform(X_test), columns=feature_cols, index=X_test.index)
+        X_train_all = pd.DataFrame(scaler.transform(X_train_all), columns=feature_cols, index=X_train_all.index)
+        X_train_nonfraud = pd.DataFrame(scaler.transform(X_train_nonfraud), columns=feature_cols, index=X_train_nonfraud.index)
+        X_all = pd.DataFrame(scaler.transform(X_all), columns=feature_cols, index=X_all.index)
 
-    return X_train, X_val, X_test, y_test
+    print("Data Prepared:")
+    print(f"all_df            : {all_df.shape}")
+    print(f"X_all             : {X_all.shape}, y_all: {y_all.shape}")
+    print(f"train_all_df      : {train_all_df.shape}")
+    print(f"X_train_all       : {X_train_all.shape}, y_train_all: {y_train_all.shape}")
+    print(f"train_nonfraud_df : {train_nonfraud_df.shape}")
+    print(f"X_train_nonfraud  : {X_train_nonfraud.shape}, y_train_nonfraud: {y_train_nonfraud.shape}")
+    print(f"X_train           : {X_train.shape}")
+    print(f"X_val             : {X_val.shape}")
+    print(f"X_test            : {X_test.shape}, y_test: {y_test.shape}")
+    print("-" * 50)
+    
+    return (all_df, X_all, y_all , 
+            train_all_df, X_train_all,y_train_all,
+            train_nonfraud_df, X_train_nonfraud, y_train_nonfraud, 
+            X_train, X_val, X_test, y_test, 
+            )
+
 
 class Autoencoder(nn.Module):
     """Autoencoder neural network with customizable architecture and optional dropout."""
@@ -851,7 +891,7 @@ def plot_learning_curve(train_losses, val_losses):
     plt.show()
 
 @timer
-def get_reconstruction_error(model, X_test, loss_name="mse"):
+def get_reconstruction_error(model, X_scaled, loss_name="mse"):
     """
     Compute per-sample reconstruction error for an autoencoder using the specified loss.
 
@@ -859,8 +899,8 @@ def get_reconstruction_error(model, X_test, loss_name="mse"):
     ----------
     model : nn.Module
         Trained autoencoder.
-    X_test : np.array or pd.DataFrame
-        Test data.
+    X_scaled : np.array or pd.DataFrame
+        Features scaled data.
     loss_name : str
         Loss function to use ("mse", "mae", "huber", etc.).
 
@@ -869,14 +909,12 @@ def get_reconstruction_error(model, X_test, loss_name="mse"):
     np.array
         Reconstruction error for each sample.
     """
-    import torch
-    import numpy as np
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     model.to(device)
 
-    X_tensor = torch.tensor(X_test.values if hasattr(X_test, "values") else X_test,
+    X_tensor = torch.tensor(X_scaled.values if hasattr(X_scaled, "values") else X_scaled,
                             dtype=torch.float32, device=device)
     
     loss_fn = get_loss_function(loss_name)
@@ -896,63 +934,63 @@ def get_reconstruction_error(model, X_test, loss_name="mse"):
     
     return recon_error
 
-@timer
-def plot_threshold_vs_metric_percentile(y_true, recon_error, percentiles=None, metric='accuracy'):
-    """
-    Plot predicted fraud count and chosen metric as threshold varies over percentiles.
+# @timer
+# def plot_threshold_vs_metric_percentile(y_true, recon_error, percentiles=None, metric='accuracy'):
+#     """
+#     Plot predicted fraud count and chosen metric as threshold varies over percentiles.
 
-    Parameters:
-    - y_true: true labels (0=normal, 1=fraud)
-    - recon_error: reconstruction errors
-    - percentiles: list or np.array of percentiles to test (0-100). Default: 1 to 99
-    - metric: one of ['accuracy', 'precision', 'recall', 'f0.5']
+#     Parameters:
+#     - y_true: true labels (0=normal, 1=fraud)
+#     - recon_error: reconstruction errors
+#     - percentiles: list or np.array of percentiles to test (0-100). Default: 1 to 99
+#     - metric: one of ['accuracy', 'precision', 'recall', 'f0.5']
 
-    Example:
-    plot_threshold_vs_metric_percentile(y_test, recon_error, metric='precision')
-    """
-    if percentiles is None:
-        percentiles = np.arange(1, 100)  # 1% to 99%
+#     Example:
+#     plot_threshold_vs_metric_percentile(y_test, recon_error, metric='precision')
+#     """
+#     if percentiles is None:
+#         percentiles = np.arange(1, 100)  # 1% to 99%
 
-    thresholds = np.percentile(recon_error, percentiles)
+#     thresholds = np.percentile(recon_error, percentiles)
 
-    metric_values = []
-    fraud_counts = []
+#     metric_values = []
+#     fraud_counts = []
 
-    for thresh in thresholds:
-        y_pred = (recon_error > thresh).astype(int)
+#     for thresh in thresholds:
+#         y_pred = (recon_error > thresh).astype(int)
 
-        if metric == 'accuracy':
-            val = accuracy_score(y_true, y_pred)
-        elif metric == 'precision':
-            val = precision_score(y_true, y_pred, zero_division=0)
-        elif metric == 'recall':
-            val = recall_score(y_true, y_pred, zero_division=0)
-        elif metric == 'f0.5':
-            val = fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)
-        else:
-            raise ValueError(f"Unsupported metric '{metric}'")
+#         if metric == 'accuracy':
+#             val = accuracy_score(y_true, y_pred)
+#         elif metric == 'precision':
+#             val = precision_score(y_true, y_pred, zero_division=0)
+#         elif metric == 'recall':
+#             val = recall_score(y_true, y_pred, zero_division=0)
+#         elif metric == 'f0.5':
+#             val = fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)
+#         else:
+#             raise ValueError(f"Unsupported metric '{metric}'")
 
-        metric_values.append(val)
-        fraud_counts.append(y_pred.sum())
+#         metric_values.append(val)
+#         fraud_counts.append(y_pred.sum())
 
-    fig, ax1 = plt.subplots(figsize=(10,6))
+#     fig, ax1 = plt.subplots(figsize=(10,6))
 
-    color_count = 'tab:orange'
-    ax1.set_xlabel('Threshold Percentile')
-    ax1.set_ylabel('Count Predicted Fraud', color=color_count)
-    ax1.bar(percentiles, fraud_counts, alpha=0.3, color=color_count)
-    ax1.tick_params(axis='y', labelcolor=color_count)
-    ax1.grid(True)
+#     color_count = 'tab:orange'
+#     ax1.set_xlabel('Threshold Percentile')
+#     ax1.set_ylabel('Count Predicted Fraud', color=color_count)
+#     ax1.bar(percentiles, fraud_counts, alpha=0.3, color=color_count)
+#     ax1.tick_params(axis='y', labelcolor=color_count)
+#     ax1.grid(True)
 
-    ax2 = ax1.twinx()
-    color_metric = 'tab:blue'
-    ax2.set_ylabel(metric.capitalize(), color=color_metric)
-    ax2.plot(percentiles, metric_values, color=color_metric, label=metric.capitalize())
-    ax2.tick_params(axis='y', labelcolor=color_metric)
+#     ax2 = ax1.twinx()
+#     color_metric = 'tab:blue'
+#     ax2.set_ylabel(metric.capitalize(), color=color_metric)
+#     ax2.plot(percentiles, metric_values, color=color_metric, label=metric.capitalize())
+#     ax2.tick_params(axis='y', labelcolor=color_metric)
 
-    plt.title(f'Percentile Threshold vs Predicted Fraud Count and {metric.capitalize()}')
-    fig.tight_layout()
-    plt.show()
+#     plt.title(f'Percentile Threshold vs Predicted Fraud Count and {metric.capitalize()}')
+#     fig.tight_layout()
+#     plt.show()
 
 
 @timer
@@ -968,85 +1006,85 @@ def flag_anomalies(recon_error, threshold):
     return y_pred
 
 
-@timer
-def detect_anomalies(model, X_test, y_test, threshold_quantile=95):
-    '''
-    reconstruction error — how well the autoencoder reconstructs (rebuilds) the input data.
-    Calculated as mean squared error (MSE) between the original input and the reconstructed output for each sample.
-    Low reconstruction error means the sample looks like normal training data → likely normal.
-    High reconstruction error means the sample is not well reconstructed → likely anomaly/fraud.
-    '''
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.eval()
-    model.to(device)
+# @timer
+# def detect_anomalies(model, X_scaled, y_test, threshold_quantile=95):
+#     '''
+#     reconstruction error — how well the autoencoder reconstructs (rebuilds) the input data.
+#     Calculated as mean squared error (MSE) between the original input and the reconstructed output for each sample.
+#     Low reconstruction error means the sample looks like normal training data → likely normal.
+#     High reconstruction error means the sample is not well reconstructed → likely anomaly/fraud.
+#     '''
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model.eval()
+#     model.to(device)
 
-    X_test_tensor = torch.tensor(X_test.values if hasattr(X_test, "values") else X_test, dtype=torch.float32).to(device)
-    with torch.no_grad():
-        X_pred = model(X_test_tensor).cpu().numpy()
+#     X_scaled_tensor = torch.tensor(X_scaled.values if hasattr(X_scaled, "values") else X_scaled, dtype=torch.float32).to(device)
+#     with torch.no_grad():
+#         X_pred = model(X_scaled_tensor).cpu().numpy()
 
-    recon_error = np.mean((X_test - X_pred) ** 2, axis=1)
-    threshold = np.percentile(recon_error[y_test == 0], threshold_quantile)
-    predicted_fraud = (recon_error > threshold).astype(int)
+#     recon_error = np.mean((X_test - X_scaled) ** 2, axis=1)
+#     threshold = np.percentile(recon_error[y_test == 0], threshold_quantile)
+#     predicted_fraud = (recon_error > threshold).astype(int)
 
-    print(f"Threshold (q={threshold_quantile}): {threshold:.4f}")
-    print(classification_report(y_test, predicted_fraud))
-    return recon_error, predicted_fraud
+#     print(f"Threshold (q={threshold_quantile}): {threshold:.4f}")
+#     print(classification_report(y_test, predicted_fraud))
+#     return recon_error, predicted_fraud
 
     
-@timer
-def tune_autoencoder_grid(X_train, X_val, param_grid, epochs=50, verbose=True):
-    """
-    Tune autoencoder hyperparameters using train and val data only.
+# @timer
+# def tune_autoencoder_grid(X_train, X_val, param_grid, epochs=50, verbose=True):
+#     """
+#     Tune autoencoder hyperparameters using train and val data only.
 
-    Select best model/config based on validation loss.
+#     Select best model/config based on validation loss.
 
-    Returns:
-        best_model, best_config, best_val_loss
-    """
-    keys, values = zip(*param_grid.items())
-    configs = [dict(zip(keys, v)) for v in itertools.product(*values)]
+#     Returns:
+#         best_model, best_config, best_val_loss
+#     """
+#     keys, values = zip(*param_grid.items())
+#     configs = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    best_val_loss = np.inf
-    best_model = None
-    best_config = None
+#     best_val_loss = np.inf
+#     best_model = None
+#     best_config = None
 
-    for i, cfg in enumerate(configs):
-        if verbose:
-            print(f"\nTesting config {i+1}/{len(configs)}: {cfg}")
+#     for i, cfg in enumerate(configs):
+#         if verbose:
+#             print(f"\nTesting config {i+1}/{len(configs)}: {cfg}")
 
-        model = Autoencoder(
-            input_dim=X_train.shape[1],
-            encoding_dim=cfg.get("encoding_dim", 4),
-            hidden_layers=cfg.get("hidden_layers", [8]),
-            activation=cfg.get("activation", nn.ReLU),
-            verbose=False
-        )
+#         model = Autoencoder(
+#             input_dim=X_train.shape[1],
+#             encoding_dim=cfg.get("encoding_dim", 4),
+#             hidden_layers=cfg.get("hidden_layers", [8]),
+#             activation=cfg.get("activation", nn.ReLU),
+#             verbose=False
+#         )
 
-        model, train_losses, val_losses = train_autoencoder(
-            model,
-            X_train,
-            X_val,
-            epochs=epochs,
-            batch_size=cfg.get("batch_size", 32),
-            lr=cfg.get("lr", 1e-3),
-            verbose=False
-        )
+#         model, train_losses, val_losses = train_autoencoder(
+#             model,
+#             X_train,
+#             X_val,
+#             epochs=epochs,
+#             batch_size=cfg.get("batch_size", 32),
+#             lr=cfg.get("lr", 1e-3),
+#             verbose=False
+#         )
 
-        current_val_loss = val_losses[-1]  # or min(val_losses)
+#         current_val_loss = val_losses[-1]  # or min(val_losses)
 
-        if verbose:
-            print(f"Config {i+1} final val loss: {current_val_loss:.4f}")
+#         if verbose:
+#             print(f"Config {i+1} final val loss: {current_val_loss:.4f}")
 
-        if current_val_loss < best_val_loss:
-            best_val_loss = current_val_loss
-            best_model = model
-            best_config = cfg
+#         if current_val_loss < best_val_loss:
+#             best_val_loss = current_val_loss
+#             best_model = model
+#             best_config = cfg
 
-    if verbose:
-        print(f"\nBest config: {best_config}")
-        print(f"Best validation loss: {best_val_loss:.4f}")
+#     if verbose:
+#         print(f"\nBest config: {best_config}")
+#         print(f"Best validation loss: {best_val_loss:.4f}")
 
-    return best_model, best_config, best_val_loss
+#     return best_model, best_config, best_val_loss
 
 @timer
 def extract_embeddings(model, X):
@@ -1077,74 +1115,74 @@ def extract_embeddings(model, X):
 
 
 
-@timer
-def plot_latent_space(embeddings, 
-                      y_test=None, 
-                      y_pred=None, 
-                      encoding_dim=2, 
-                      label_names={0: "Normal", 1: "Anomaly"}):
-    """
-    Plot latent space (1D, 2D, or 3D) with optional ground truth and/or predicted labels.
+# @timer
+# def plot_latent_space(embeddings, 
+#                       y_test=None, 
+#                       y_pred=None, 
+#                       encoding_dim=2, 
+#                       label_names={0: "Normal", 1: "Anomaly"}):
+#     """
+#     Plot latent space (1D, 2D, or 3D) with optional ground truth and/or predicted labels.
 
-    Parameters:
-    - embeddings: np.array of shape (n_samples, encoding_dim)
-    - y_test: np.array of ground truth labels (optional)
-    - y_pred: np.array of predicted labels (optional)
-    - encoding_dim: int (1, 2, or 3 supported)
-    - label_names: dict, optional mapping of class labels for legend
-    """
+#     Parameters:
+#     - embeddings: np.array of shape (n_samples, encoding_dim)
+#     - y_test: np.array of ground truth labels (optional)
+#     - y_pred: np.array of predicted labels (optional)
+#     - encoding_dim: int (1, 2, or 3 supported)
+#     - label_names: dict, optional mapping of class labels for legend
+#     """
 
-    def _scatter(ax, x, y=None, z=None, labels=None, title=None):
-        c = labels if labels is not None else 'gray'
-        if z is None:
-            sc = ax.scatter(x[:, 0], x[:, 1] if x.shape[1] > 1 else [0]*len(x), c=c, cmap='coolwarm', alpha=0.6)
-        else:
-            sc = ax.scatter(x[:, 0], x[:, 1], z, c=c, cmap='coolwarm', alpha=0.6)
-        ax.set_title(title)
-        if encoding_dim >= 2:
-            ax.set_xlabel("Latent dim 1")
-            ax.set_ylabel("Latent dim 2")
-        if encoding_dim == 3:
-            ax.set_zlabel("Latent dim 3")
-        return sc
+#     def _scatter(ax, x, y=None, z=None, labels=None, title=None):
+#         c = labels if labels is not None else 'gray'
+#         if z is None:
+#             sc = ax.scatter(x[:, 0], x[:, 1] if x.shape[1] > 1 else [0]*len(x), c=c, cmap='coolwarm', alpha=0.6)
+#         else:
+#             sc = ax.scatter(x[:, 0], x[:, 1], z, c=c, cmap='coolwarm', alpha=0.6)
+#         ax.set_title(title)
+#         if encoding_dim >= 2:
+#             ax.set_xlabel("Latent dim 1")
+#             ax.set_ylabel("Latent dim 2")
+#         if encoding_dim == 3:
+#             ax.set_zlabel("Latent dim 3")
+#         return sc
 
-    if encoding_dim not in [1, 2, 3]:
-        print("Only 1D, 2D, or 3D latent spaces are supported. For higher dims, use t-SNE or PCA.")
-        return
+#     if encoding_dim not in [1, 2, 3]:
+#         print("Only 1D, 2D, or 3D latent spaces are supported. For higher dims, use t-SNE or PCA.")
+#         return
 
-    if y_test is not None and y_pred is not None:
-        # Show side-by-side plots for true vs predicted
-        fig = plt.figure(figsize=(14, 5) if encoding_dim <= 2 else (16, 6))
+#     if y_test is not None and y_pred is not None:
+#         # Show side-by-side plots for true vs predicted
+#         fig = plt.figure(figsize=(14, 5) if encoding_dim <= 2 else (16, 6))
         
-        # First subplot: ground truth
-        ax1 = fig.add_subplot(121, projection='3d' if encoding_dim == 3 else None)
-        _scatter(ax1, embeddings, 
-                 z=embeddings[:, 2] if encoding_dim == 3 else None, 
-                 labels=y_test, 
-                 title="Latent Space (Ground Truth)")
+#         # First subplot: ground truth
+#         ax1 = fig.add_subplot(121, projection='3d' if encoding_dim == 3 else None)
+#         _scatter(ax1, embeddings, 
+#                  z=embeddings[:, 2] if encoding_dim == 3 else None, 
+#                  labels=y_test, 
+#                  title="Latent Space (Ground Truth)")
 
-        # Second subplot: predicted labels
-        ax2 = fig.add_subplot(122, projection='3d' if encoding_dim == 3 else None)
-        sc = _scatter(ax2, embeddings, 
-                      z=embeddings[:, 2] if encoding_dim == 3 else None, 
-                      labels=y_pred, 
-                      title="Latent Space (Predicted)")
+#         # Second subplot: predicted labels
+#         ax2 = fig.add_subplot(122, projection='3d' if encoding_dim == 3 else None)
+#         sc = _scatter(ax2, embeddings, 
+#                       z=embeddings[:, 2] if encoding_dim == 3 else None, 
+#                       labels=y_pred, 
+#                       title="Latent Space (Predicted)")
         
-        # Color bar only once
-        cbar = fig.colorbar(sc, ax=[ax1, ax2], shrink=0.8)
-        cbar.set_label('Label')
-        plt.show()
+#         # Color bar only once
+#         cbar = fig.colorbar(sc, ax=[ax1, ax2], shrink=0.8)
+#         cbar.set_label('Label')
+#         plt.show()
 
-    else:
-        # Single plot: either y_test or y_pred or no label
-        fig = plt.figure(figsize=(8, 6))
-        ax = fig.add_subplot(111, projection='3d' if encoding_dim == 3 else None)
-        sc = _scatter(ax, embeddings, 
-                      z=embeddings[:, 2] if encoding_dim == 3 else None,
-                      labels=y_test if y_test is not None else y_pred, 
-                      title="Latent Space")
-        fig.colorbar(sc, label="Label")
-        plt.show()
+#     else:
+#         # Single plot: either y_test or y_pred or no label
+#         fig = plt.figure(figsize=(8, 6))
+#         ax = fig.add_subplot(111, projection='3d' if encoding_dim == 3 else None)
+#         sc = _scatter(ax, embeddings, 
+#                       z=embeddings[:, 2] if encoding_dim == 3 else None,
+#                       labels=y_test if y_test is not None else y_pred, 
+#                       title="Latent Space")
+#         fig.colorbar(sc, label="Label")
+#         plt.show()
 
 # ----------------- 2D version -----------------
 @timer
@@ -1275,14 +1313,15 @@ def plot_latent_space_3d(embeddings, y_test, y_pred, index_df=None, hover_col=No
 
         
 @timer
-def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'
-                        # ,date_col = 'expected_dt'
+def create_pack_results(full_df, y_pred, experiment_name
+                        , id_col='sales_id'
+                        # , date_col = 'expected_dt'
                        ):
     """
     Create a wide-format DataFrame with sales_id and one experiment column for predictions.
 
     Parameters:
-    - test_df: pd.DataFrame with the test data (to get sales_id)
+    - full_df: pd.DataFrame with the full cols data (to get sales_id and date_col)
     - y_pred: array-like predicted labels
     - experiment_name: str, the column name for predictions (e.g., 'ae_1')
     - id_col: str, name of the ID column in test_df (default 'sales_id')
@@ -1291,34 +1330,34 @@ def create_pack_results(test_df, y_pred, experiment_name, id_col='sales_id'
     - pd.DataFrame with columns ['sales_id', experiment_name]
     """
     df_results = pd.DataFrame({
-        id_col: test_df[id_col].values,
-        # date_col:test_df[date_col].values,
+        id_col: full_df[id_col].values,
+        # date_col:full_df[date_col].values,
         experiment_name: y_pred
     })
     return df_results
     
-@timer
-def append_experiment_results(base_df, y_pred, experiment_name, id_col='sales_id'):
-    """
-    Append a new experiment's predictions as a column to an existing results DataFrame.
+# @timer
+# def append_experiment_results(base_df, y_pred, experiment_name, id_col='sales_id'):
+#     """
+#     Append a new experiment's predictions as a column to an existing results DataFrame.
 
-    Parameters:
-    - base_df: pd.DataFrame with existing results, must have `id_col`
-    - y_pred: array-like predicted labels for the new experiment
-    - experiment_name: str, new column name (e.g., 'ae_2')
-    - id_col: str, name of the ID column
+#     Parameters:
+#     - base_df: pd.DataFrame with existing results, must have `id_col`
+#     - y_pred: array-like predicted labels for the new experiment
+#     - experiment_name: str, new column name (e.g., 'ae_2')
+#     - id_col: str, name of the ID column
 
-    Returns:
-    - pd.DataFrame updated with new experiment predictions column
-    """
-    new_df = pd.DataFrame({
-        id_col: base_df[id_col].values,
-        experiment_name: y_pred
-    })
+#     Returns:
+#     - pd.DataFrame updated with new experiment predictions column
+#     """
+#     new_df = pd.DataFrame({
+#         id_col: base_df[id_col].values,
+#         experiment_name: y_pred
+#     })
 
-    # Merge on ID to keep existing columns and add new one
-    merged_df = base_df.merge(new_df, on=id_col)
-    return merged_df
+#     # Merge on ID to keep existing columns and add new one
+#     merged_df = base_df.merge(new_df, on=id_col)
+#     return merged_df
 
 
 @timer
@@ -1374,22 +1413,26 @@ def evaluate_fraud_predictions(x_scaled, df_lables ,true_fraud_list):
 
 @timer
 #### add loop each percentile ####
-def evaluate_thresholds(x_scaled, test_df,y_test, recon_error, true_fraud_list, 
+def evaluate_thresholds(x_scaled,
+                        train_all_df , 
+                        y_train_all, 
+                        recon_error, 
+                        true_fraud_list, 
                         exp_name ='default_all' ,               
                         percentiles=None,
                        ):
     if percentiles is None:
         percentiles = [10,20,30,40,50,60,70,80,85,90,95,97,99]
 
-    df_lables_all = pd.DataFrame(index=test_df['sales_id'])
+    df_lables_all = pd.DataFrame(index=train_all_df['sales_id'])
     for p in percentiles:
         # threshold = np.percentile(recon_error, p)
-        threshold = np.percentile(recon_error[y_test == 0], p)
+        threshold = np.percentile(recon_error[y_train_all == 0], p)
         y_pred = flag_anomalies(recon_error, threshold)
 
         experiment_name = 'ae_' + exp_name + f'_p{p}'
-        df_labels_tmp = create_pack_results(test_df, y_pred, experiment_name=experiment_name)
-        df_labels_tmp = df_labels_tmp.set_index('sales_id')
+        df_labels_tmp = create_pack_results(full_df=train_all_df, y_pred=y_pred, experiment_name=experiment_name)
+        df_labels_tmp = df_labels_tmp.set_index(['sales_id'])
 
         df_lables_all[experiment_name] = df_labels_tmp[experiment_name]
 
