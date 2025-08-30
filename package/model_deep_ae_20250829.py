@@ -358,68 +358,6 @@ class Autoencoder(nn.Module):
             print(f"Latent embedding: {x.shape}")
         return x
 
-# @timer
-# def train_autoencoder(model, 
-#                       X_train, 
-#                       X_val,
-#                       epochs=50, 
-#                       batch_size=32, 
-#                       lr=1e-3,
-#                       verbose=True):
-#     """
-#     Train autoencoder with explicit train and val sets (no internal splitting).
-#     """
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model.to(device)
-
-#     # Convert to tensors
-#     # X_train = torch.tensor(X_train, dtype=torch.float32)
-#     # X_val = torch.tensor(X_val, dtype=torch.float32)
-#     X_train = torch.tensor(X_train.values if hasattr(X_train, "values") else X_train, dtype=torch.float32)
-#     X_val = torch.tensor(X_val.values if hasattr(X_val, "values") else X_val, dtype=torch.float32)
-
-
-#     train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
-#     val_loader = torch.utils.data.DataLoader(X_val, batch_size=batch_size, shuffle=False)
-
-#     criterion = nn.MSELoss()
-#     optimizer = optim.Adam(model.parameters(), lr=lr)
-
-#     train_losses = []
-#     val_losses = []
-
-#     for epoch in range(epochs):
-#         model.train()
-#         train_loss = 0.0
-#         for batch in train_loader:
-#             batch = batch.to(device)
-#             optimizer.zero_grad()
-#             output = model(batch)
-#             loss = criterion(output, batch)
-#             loss.backward()
-#             optimizer.step()
-#             train_loss += loss.item()
-
-#         model.eval()
-#         val_loss = 0.0
-#         with torch.no_grad():
-#             for batch in val_loader:
-#                 batch = batch.to(device)
-#                 output = model(batch)
-#                 loss = criterion(output, batch)
-#                 val_loss += loss.item()
-
-#         avg_train_loss = train_loss / len(train_loader)
-#         avg_val_loss = val_loss / len(val_loader)
-
-#         train_losses.append(avg_train_loss)
-#         val_losses.append(avg_val_loss)
-
-#         if verbose:
-#             print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-
-#     return model, train_losses, val_losses
-
 #####################
 
 def _is_s3_path(path: str) -> bool:
@@ -934,65 +872,6 @@ def get_reconstruction_error(model, X_scaled, loss_name="mse"):
     
     return recon_error
 
-# @timer
-# def plot_threshold_vs_metric_percentile(y_true, recon_error, percentiles=None, metric='accuracy'):
-#     """
-#     Plot predicted fraud count and chosen metric as threshold varies over percentiles.
-
-#     Parameters:
-#     - y_true: true labels (0=normal, 1=fraud)
-#     - recon_error: reconstruction errors
-#     - percentiles: list or np.array of percentiles to test (0-100). Default: 1 to 99
-#     - metric: one of ['accuracy', 'precision', 'recall', 'f0.5']
-
-#     Example:
-#     plot_threshold_vs_metric_percentile(y_test, recon_error, metric='precision')
-#     """
-#     if percentiles is None:
-#         percentiles = np.arange(1, 100)  # 1% to 99%
-
-#     thresholds = np.percentile(recon_error, percentiles)
-
-#     metric_values = []
-#     fraud_counts = []
-
-#     for thresh in thresholds:
-#         y_pred = (recon_error > thresh).astype(int)
-
-#         if metric == 'accuracy':
-#             val = accuracy_score(y_true, y_pred)
-#         elif metric == 'precision':
-#             val = precision_score(y_true, y_pred, zero_division=0)
-#         elif metric == 'recall':
-#             val = recall_score(y_true, y_pred, zero_division=0)
-#         elif metric == 'f0.5':
-#             val = fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)
-#         else:
-#             raise ValueError(f"Unsupported metric '{metric}'")
-
-#         metric_values.append(val)
-#         fraud_counts.append(y_pred.sum())
-
-#     fig, ax1 = plt.subplots(figsize=(10,6))
-
-#     color_count = 'tab:orange'
-#     ax1.set_xlabel('Threshold Percentile')
-#     ax1.set_ylabel('Count Predicted Fraud', color=color_count)
-#     ax1.bar(percentiles, fraud_counts, alpha=0.3, color=color_count)
-#     ax1.tick_params(axis='y', labelcolor=color_count)
-#     ax1.grid(True)
-
-#     ax2 = ax1.twinx()
-#     color_metric = 'tab:blue'
-#     ax2.set_ylabel(metric.capitalize(), color=color_metric)
-#     ax2.plot(percentiles, metric_values, color=color_metric, label=metric.capitalize())
-#     ax2.tick_params(axis='y', labelcolor=color_metric)
-
-#     plt.title(f'Percentile Threshold vs Predicted Fraud Count and {metric.capitalize()}')
-#     fig.tight_layout()
-#     plt.show()
-
-
 @timer
 # Flag anomalies based on a chosen threshold
 def flag_anomalies(recon_error, threshold):
@@ -1004,87 +883,6 @@ def flag_anomalies(recon_error, threshold):
     """
     y_pred = (recon_error > threshold).astype(int)
     return y_pred
-
-
-# @timer
-# def detect_anomalies(model, X_scaled, y_test, threshold_quantile=95):
-#     '''
-#     reconstruction error — how well the autoencoder reconstructs (rebuilds) the input data.
-#     Calculated as mean squared error (MSE) between the original input and the reconstructed output for each sample.
-#     Low reconstruction error means the sample looks like normal training data → likely normal.
-#     High reconstruction error means the sample is not well reconstructed → likely anomaly/fraud.
-#     '''
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model.eval()
-#     model.to(device)
-
-#     X_scaled_tensor = torch.tensor(X_scaled.values if hasattr(X_scaled, "values") else X_scaled, dtype=torch.float32).to(device)
-#     with torch.no_grad():
-#         X_pred = model(X_scaled_tensor).cpu().numpy()
-
-#     recon_error = np.mean((X_test - X_scaled) ** 2, axis=1)
-#     threshold = np.percentile(recon_error[y_test == 0], threshold_quantile)
-#     predicted_fraud = (recon_error > threshold).astype(int)
-
-#     print(f"Threshold (q={threshold_quantile}): {threshold:.4f}")
-#     print(classification_report(y_test, predicted_fraud))
-#     return recon_error, predicted_fraud
-
-    
-# @timer
-# def tune_autoencoder_grid(X_train, X_val, param_grid, epochs=50, verbose=True):
-#     """
-#     Tune autoencoder hyperparameters using train and val data only.
-
-#     Select best model/config based on validation loss.
-
-#     Returns:
-#         best_model, best_config, best_val_loss
-#     """
-#     keys, values = zip(*param_grid.items())
-#     configs = [dict(zip(keys, v)) for v in itertools.product(*values)]
-
-#     best_val_loss = np.inf
-#     best_model = None
-#     best_config = None
-
-#     for i, cfg in enumerate(configs):
-#         if verbose:
-#             print(f"\nTesting config {i+1}/{len(configs)}: {cfg}")
-
-#         model = Autoencoder(
-#             input_dim=X_train.shape[1],
-#             encoding_dim=cfg.get("encoding_dim", 4),
-#             hidden_layers=cfg.get("hidden_layers", [8]),
-#             activation=cfg.get("activation", nn.ReLU),
-#             verbose=False
-#         )
-
-#         model, train_losses, val_losses = train_autoencoder(
-#             model,
-#             X_train,
-#             X_val,
-#             epochs=epochs,
-#             batch_size=cfg.get("batch_size", 32),
-#             lr=cfg.get("lr", 1e-3),
-#             verbose=False
-#         )
-
-#         current_val_loss = val_losses[-1]  # or min(val_losses)
-
-#         if verbose:
-#             print(f"Config {i+1} final val loss: {current_val_loss:.4f}")
-
-#         if current_val_loss < best_val_loss:
-#             best_val_loss = current_val_loss
-#             best_model = model
-#             best_config = cfg
-
-#     if verbose:
-#         print(f"\nBest config: {best_config}")
-#         print(f"Best validation loss: {best_val_loss:.4f}")
-
-#     return best_model, best_config, best_val_loss
 
 @timer
 def extract_embeddings(model, X):
@@ -1112,77 +910,6 @@ def extract_embeddings(model, X):
 
     print(f"[INFO] Extracted embeddings shape: {embeddings.shape}")
     return embeddings
-
-
-
-# @timer
-# def plot_latent_space(embeddings, 
-#                       y_test=None, 
-#                       y_pred=None, 
-#                       encoding_dim=2, 
-#                       label_names={0: "Normal", 1: "Anomaly"}):
-#     """
-#     Plot latent space (1D, 2D, or 3D) with optional ground truth and/or predicted labels.
-
-#     Parameters:
-#     - embeddings: np.array of shape (n_samples, encoding_dim)
-#     - y_test: np.array of ground truth labels (optional)
-#     - y_pred: np.array of predicted labels (optional)
-#     - encoding_dim: int (1, 2, or 3 supported)
-#     - label_names: dict, optional mapping of class labels for legend
-#     """
-
-#     def _scatter(ax, x, y=None, z=None, labels=None, title=None):
-#         c = labels if labels is not None else 'gray'
-#         if z is None:
-#             sc = ax.scatter(x[:, 0], x[:, 1] if x.shape[1] > 1 else [0]*len(x), c=c, cmap='coolwarm', alpha=0.6)
-#         else:
-#             sc = ax.scatter(x[:, 0], x[:, 1], z, c=c, cmap='coolwarm', alpha=0.6)
-#         ax.set_title(title)
-#         if encoding_dim >= 2:
-#             ax.set_xlabel("Latent dim 1")
-#             ax.set_ylabel("Latent dim 2")
-#         if encoding_dim == 3:
-#             ax.set_zlabel("Latent dim 3")
-#         return sc
-
-#     if encoding_dim not in [1, 2, 3]:
-#         print("Only 1D, 2D, or 3D latent spaces are supported. For higher dims, use t-SNE or PCA.")
-#         return
-
-#     if y_test is not None and y_pred is not None:
-#         # Show side-by-side plots for true vs predicted
-#         fig = plt.figure(figsize=(14, 5) if encoding_dim <= 2 else (16, 6))
-        
-#         # First subplot: ground truth
-#         ax1 = fig.add_subplot(121, projection='3d' if encoding_dim == 3 else None)
-#         _scatter(ax1, embeddings, 
-#                  z=embeddings[:, 2] if encoding_dim == 3 else None, 
-#                  labels=y_test, 
-#                  title="Latent Space (Ground Truth)")
-
-#         # Second subplot: predicted labels
-#         ax2 = fig.add_subplot(122, projection='3d' if encoding_dim == 3 else None)
-#         sc = _scatter(ax2, embeddings, 
-#                       z=embeddings[:, 2] if encoding_dim == 3 else None, 
-#                       labels=y_pred, 
-#                       title="Latent Space (Predicted)")
-        
-#         # Color bar only once
-#         cbar = fig.colorbar(sc, ax=[ax1, ax2], shrink=0.8)
-#         cbar.set_label('Label')
-#         plt.show()
-
-#     else:
-#         # Single plot: either y_test or y_pred or no label
-#         fig = plt.figure(figsize=(8, 6))
-#         ax = fig.add_subplot(111, projection='3d' if encoding_dim == 3 else None)
-#         sc = _scatter(ax, embeddings, 
-#                       z=embeddings[:, 2] if encoding_dim == 3 else None,
-#                       labels=y_test if y_test is not None else y_pred, 
-#                       title="Latent Space")
-#         fig.colorbar(sc, label="Label")
-#         plt.show()
 
 # ----------------- 2D version -----------------
 @timer
@@ -1335,30 +1062,20 @@ def create_pack_results(full_df, y_pred, experiment_name
         experiment_name: y_pred
     })
     return df_results
+
+@timer
+def create_pack_results_date(full_df, y_pred, experiment_name
+                        , id_col='sales_id'
+                        , date_col = 'expected_dt'
+                       ):
+
+    df_results = pd.DataFrame({
+        id_col: full_df[id_col].values,
+        date_col:full_df[date_col].values,
+        experiment_name: y_pred
+    })
+    return df_results
     
-# @timer
-# def append_experiment_results(base_df, y_pred, experiment_name, id_col='sales_id'):
-#     """
-#     Append a new experiment's predictions as a column to an existing results DataFrame.
-
-#     Parameters:
-#     - base_df: pd.DataFrame with existing results, must have `id_col`
-#     - y_pred: array-like predicted labels for the new experiment
-#     - experiment_name: str, new column name (e.g., 'ae_2')
-#     - id_col: str, name of the ID column
-
-#     Returns:
-#     - pd.DataFrame updated with new experiment predictions column
-#     """
-#     new_df = pd.DataFrame({
-#         id_col: base_df[id_col].values,
-#         experiment_name: y_pred
-#     })
-
-#     # Merge on ID to keep existing columns and add new one
-#     merged_df = base_df.merge(new_df, on=id_col)
-#     return merged_df
-
 
 @timer
 # evaluate_fraud_predictions
@@ -1449,13 +1166,12 @@ def evaluate_thresholds(x_scaled,
 # ----------------- Function 1: Training Pipeline -----------------
 @timer
 def run_training_pipeline(
-    model,
+    input_dim,
+    encoding_dim,
+    hidden_layers_list,
+    dropout,
     X_scaled_train,
     X_scaled_val,
-    X_scaled_test,
-    test_df,
-    y_test,
-    true_fraud_list=None,
     seed: int = 42,
     epochs: int = 20,
     checkpoint_every: int = 10,
@@ -1463,22 +1179,29 @@ def run_training_pipeline(
     run_dir: str = "model_checkpoint",
     loss_name: str = "mae",
     optimizer_name: str = "adam",
-    experiment_name='ae_all_1'
+    scheduler_name="plateau",
+    scheduler_params={"factor": 0.2, "patience": 5},
 ):
-    """
-    Train autoencoder, plot learning curve, create initial results, and evaluate thresholds.
-    Returns: trained_model, train_losses, val_losses, df_lables, res_thresholds
-    """
     set_seed(seed)
 
-    # ---- Check input for NaNs ----
-    for name, X in zip(["X_train", "X_val", "X_test"], [X_scaled_train, X_scaled_val, X_scaled_test]):
-        if np.isnan(X).any():
-            raise ValueError(f"[ERROR] {name} contains NaN values!")
+    # ---- set architecture ----
+    model_ae = Autoencoder(
+        input_dim=input_dim,
+        encoding_dim=encoding_dim,
+        hidden_layers=hidden_layers_list,
+        dropout=dropout,
+        verbose=False  
+    )
+
+    # ---- Print summary ----
+    print("\n===== Autoencoder Architecture =====")
+    dummy_input = torch.randn(5, X_scaled_train.shape[1])
+    summary(model_ae, input_data=dummy_input, verbose=1)  # ✅ force print summary
+    print("===================================\n")
 
     # ---- Train model ----
     trained_model, train_losses, val_losses = train_autoencoder_checkpoint(
-        model=model,
+        model=model_ae,
         X_train=X_scaled_train,
         X_val=X_scaled_val,
         epochs=epochs,
@@ -1486,86 +1209,154 @@ def run_training_pipeline(
         early_stopping_patience=early_stopping_patience,
         run_dir=run_dir,
         loss_name=loss_name,
-        optimizer_name=optimizer_name
+        optimizer_name=optimizer_name,
+        scheduler_name=scheduler_name,
+        scheduler_params=scheduler_params,
     )
 
+    # ---- Plot learning curves ----
     plot_learning_curve(train_losses, val_losses)
 
-    # ---- Create dummy predictions ----
-    y_pred_dummy = np.zeros_like(y_test)
+    return trained_model, train_losses, val_losses
 
-    # ---- Check model output for NaNs ----
-    trained_model.eval()
-    with torch.no_grad():
-        X_test_tensor = torch.tensor(X_scaled_test, dtype=torch.float32)
-        recon = trained_model(X_test_tensor)
-        if torch.isnan(recon).any():
-            raise ValueError("[ERROR] Autoencoder output contains NaN values!")
 
-    # ---- Create initial result dataframe ----
-    df_lables = create_pack_results(test_df, y_pred_dummy, experiment_name=experiment_name)
-    df_lables = df_lables.set_index('sales_id')
+@timer
+def run_lookup_threshold_pipeline(trained_model,
+                                  X_scaled_train_all,
+                                  train_all_df,
+                                  y_train_all,
+                                  true_fraud_list,
+                                  loss_name="mae",
+                                  percentile=95):
+    
+    # Step 1: Reconstruction error
+    recon_error_train = get_reconstruction_error(
+        trained_model, X_scaled_train_all, loss_name=loss_name
+    )
 
-    # ---- Compute reconstruction error ----
-    recon_error = get_reconstruction_error(trained_model, X_scaled_test, loss_name)
-    if np.isnan(recon_error).any():
-        raise ValueError("[ERROR] Reconstruction error contains NaN values!")
-
-    # ---- Evaluate thresholds ----
-    res_thresholds = evaluate_thresholds(
-        x_scaled=X_scaled_test,
-        test_df=test_df,
-        y_test=y_test,
-        recon_error=recon_error,
+    # Step 2: Lookup thresholds evaluation
+    lookup_pct_threshold = evaluate_thresholds(
+        x_scaled=X_scaled_train_all,
+        train_all_df=train_all_df,
+        y_train_all=y_train_all,
+        recon_error=recon_error_train,
         true_fraud_list=true_fraud_list
     )
 
-    return trained_model, train_losses, val_losses, df_lables, res_thresholds
+    # Step 3: Chosen threshold from normal data only
+    chosen_threshold = np.percentile(
+        recon_error_train[y_train_all == 0], percentile
+    )
+
+    # Step 4: Flag anomalies
+    y_pred_train = flag_anomalies(recon_error_train, chosen_threshold)
+
+    return recon_error_train, lookup_pct_threshold, chosen_threshold, y_pred_train
 
 
-
-# ----------------- Function 2: Threshold & Plot Pipeline -----------------
 @timer
-def run_threshold_and_plot_pipeline(
-    trained_model,
-    X_scaled_test,
-    test_df,
-    y_test,
-    threshold_percentile: float = 95,
-    hover_col: str = 'sales_id'
+def run_evaluate_test_pipeline(trained_model, 
+                               X_scaled_test, 
+                               test_df, 
+                               threshold, 
+                               experiment_name="ae_test_1",
+                               loss_name="mae"):
+
+    # Step 1: Get reconstruction errors
+    recon_error_test = get_reconstruction_error(trained_model, X_scaled_test, loss_name=loss_name)
+
+    # Step 2: Flag anomalies using given threshold
+    y_pred_test = flag_anomalies(recon_error_test, threshold)
+
+    # Step 3: Pack results with metadata
+    result_test_df = create_pack_results_date(test_df, y_pred_test, experiment_name=experiment_name)
+
+    return recon_error_test, y_pred_test, result_test_df
+
+@timer
+def run_vis_embedding_pipeline(
+    model,
+    X_data,
+    y_data,
+    index_df,
+    hover_col="sales_id",
+    threshold=0.5,
+    experiment_name="ae_all_1",
+    loss_name="mae",
+    plot_type="2d"  # choices: "2d", "3d", or "both"
 ):
     """
-    Compute reconstruction error, select threshold, flag anomalies, extract embeddings,
-    and plot 2D and 3D latent space.
-    Returns: recon_error, threshold, y_pred, embeddings
+    Run pipeline for embeddings visualization and anomaly detection.
+    
+    Parameters
+    ----------
+    model : trained autoencoder
+    X_data : np.array
+        Scaled features input.
+    y_data : array-like
+        True labels or classes (optional).
+    index_df : pd.DataFrame
+        DataFrame with indices and metadata.
+    hover_col : str, default="sales_id"
+        Column to display on hover in plots.
+    threshold : float, default=0.5
+        Threshold for anomaly flagging.
+    experiment_name : str, default="ae_all_1"
+        Name tag for saving results.
+    loss_name : str, default="mae"
+        Loss function used for reconstruction error.
+    plot_type : {"2d", "3d", "both"}, default="2d"
+        Which latent space plot to display.
+    
+    Returns
+    -------
+    result_df : pd.DataFrame
+        Packaged results with anomaly flags.
     """
-    # 1. Compute reconstruction error
-    recon_error = get_reconstruction_error(trained_model, X_scaled_test)
+    
+    # Reconstruction error
+    recon_error = get_reconstruction_error(model, X_data, loss_name=loss_name)
 
-    # 2. Compute threshold manually (percentile on normal data)
-    threshold = np.percentile(recon_error[y_test == 0], threshold_percentile)
-    print(f"Selected threshold ({threshold_percentile} percentile): {threshold:.4f}")
-
-    # 3. Flag anomalies
+    # Flag anomalies
     y_pred = flag_anomalies(recon_error, threshold)
 
-    # 4. Extract embeddings
-    embeddings = extract_embeddings(trained_model, X_scaled_test)
+    # Extract embeddings
+    embeddings = extract_embeddings(model, X_data)
 
-    # 5. Plot latent spaces
-    plot_latent_space_2d(
-        embeddings=embeddings,
-        y_test=y_test,
-        y_pred=y_pred,
-        index_df=test_df,
-        hover_col=hover_col
-    )
-    plot_latent_space_3d(
-        embeddings=embeddings,
-        y_test=y_test,
-        y_pred=y_pred,
-        index_df=test_df,
-        hover_col=hover_col
-    )
+    # Latent space visualization
+    if plot_type == "2d":
+        plot_latent_space_2d(
+            embeddings=embeddings,
+            y_test=y_data,
+            y_pred=y_pred,
+            index_df=index_df,
+            hover_col=hover_col
+        )
+    elif plot_type == "3d":
+        plot_latent_space_3d(
+            embeddings=embeddings,
+            y_test=y_data,
+            y_pred=y_pred,
+            index_df=index_df,
+            hover_col=hover_col
+        )
+    elif plot_type == "both":
+        plot_latent_space_2d(
+            embeddings=embeddings,
+            y_test=y_data,
+            y_pred=y_pred,
+            index_df=index_df,
+            hover_col=hover_col
+        )
+        plot_latent_space_3d(
+            embeddings=embeddings,
+            y_test=y_data,
+            y_pred=y_pred,
+            index_df=index_df,
+            hover_col=hover_col
+        )
 
-    return recon_error, threshold, y_pred, embeddings
+    # Pack results
+    result_df = create_pack_results_date(index_df, y_pred, experiment_name=experiment_name)
+
+    return recon_error,y_pred,embeddings,result_df
