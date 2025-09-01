@@ -690,7 +690,8 @@ def train_autoencoder_checkpoint(model,
             if not _is_s3_path(run_dir):
                 os.makedirs(run_dir, exist_ok=True)
 
-
+    best_state_dict = None
+    
     for epoch in range(start_epoch, epochs):
         # --- Training ---
         model.train()
@@ -752,23 +753,28 @@ def train_autoencoder_checkpoint(model,
             print(f"[INFO] Current LR: {current_lr:.6f}")
             last_lr = current_lr
 
-
         # --- Save checkpoint ---
         if (epoch + 1) % checkpoint_every == 0:
             save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir)
 
-        # --- Early stopping ---
+        # # --- Early stopping & best-model save (guarded) ---
         if early_stopping_patience is not None:
+            if epoch == 0 and verbose:  
+                print(f"✅ Early stopping is enabled (patience={early_stopping_patience})")
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 epochs_no_improve = 0
-                torch.save(model.state_dict(), os.path.join(run_dir, "best_model.pth"))
+                best_state_dict = model.state_dict()  # keep in memory
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= early_stopping_patience:
                     if verbose:
                         print(f"Early stopping at epoch {epoch+1}")
                     break
+
+    if best_state_dict is not None:
+        save_checkpoint(model, optimizer, epoch, train_losses, val_losses, run_dir,
+                        prefix="best_model")
 
     return model, train_losses, val_losses
 
