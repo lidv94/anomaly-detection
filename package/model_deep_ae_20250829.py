@@ -1289,7 +1289,7 @@ def run_vis_embedding_pipeline(
     threshold=0.5,
     experiment_name="ae_all_1",
     loss_name="mae",
-    plot_type="2d"  # choices: "2d", "3d", or "both"
+    plot_type="2d"  # choices: "2d", "3d", "both", "none"
 ):
     """
     Run pipeline for embeddings visualization and anomaly detection.
@@ -1311,11 +1311,17 @@ def run_vis_embedding_pipeline(
         Name tag for saving results.
     loss_name : str, default="mae"
         Loss function used for reconstruction error.
-    plot_type : {"2d", "3d", "both"}, default="2d"
-        Which latent space plot to display.
+    plot_type : {"2d", "3d", "both", "none"}, default="2d"
+        Which latent space plot to display. "none" disables plotting.
     
     Returns
     -------
+    recon_error : np.array
+        Reconstruction error for each sample.
+    y_pred : np.array
+        Binary anomaly flags.
+    embeddings : np.array
+        Latent embeddings from encoder.
     result_df : pd.DataFrame
         Packaged results with anomaly flags.
     """
@@ -1330,7 +1336,7 @@ def run_vis_embedding_pipeline(
     embeddings = extract_embeddings(model, X_data)
 
     # Latent space visualization
-    if plot_type == "2d":
+    if plot_type.lower() in ["2d", "both"]:
         plot_latent_space_2d(
             embeddings=embeddings,
             y_test=y_data,
@@ -1338,7 +1344,7 @@ def run_vis_embedding_pipeline(
             index_df=index_df,
             hover_col=hover_col
         )
-    elif plot_type == "3d":
+    if plot_type.lower() in ["3d", "both"]:
         plot_latent_space_3d(
             embeddings=embeddings,
             y_test=y_data,
@@ -1346,23 +1352,10 @@ def run_vis_embedding_pipeline(
             index_df=index_df,
             hover_col=hover_col
         )
-    elif plot_type == "both":
-        plot_latent_space_2d(
-            embeddings=embeddings,
-            y_test=y_data,
-            y_pred=y_pred,
-            index_df=index_df,
-            hover_col=hover_col
-        )
-        plot_latent_space_3d(
-            embeddings=embeddings,
-            y_test=y_data,
-            y_pred=y_pred,
-            index_df=index_df,
-            hover_col=hover_col
-        )
+    # if plot_type == "none", skip plotting
 
     # Pack results
     result_df = create_pack_results_date(index_df, y_pred, experiment_name=experiment_name)
 
-    return recon_error,y_pred,embeddings,result_df
+    return recon_error, y_pred, embeddings, result_df
+
