@@ -294,16 +294,30 @@ def prepare_train_val_test_data(train_df,
             X_train, X_val, X_test, y_test, 
             )
 
+def init_weights(layer, seed=42):
+    """
+    Deterministic per-layer initialization.
+    Setting the seed during weight initialization ensures that your model always starts from the exact same point.
+
+    That means your experiments are reproducible, results are fairly comparable, and debugging becomes much easier.
+    
+    """
+    if isinstance(layer, nn.Linear):
+        torch.manual_seed(seed)  # reset RNG for reproducibility
+        nn.init.xavier_uniform_(layer.weight)  # you can change to kaiming, normal, etc.
+        if layer.bias is not None:
+            nn.init.zeros_(layer.bias)
 
 class Autoencoder(nn.Module):
     """Autoencoder neural network with customizable architecture and optional dropout."""
 
     def __init__(self, input_dim, encoding_dim=4, hidden_layers=[8], 
-                 activation=nn.ReLU, dropout=0.0, verbose=False):
+                 activation=nn.ReLU, dropout=0.0, verbose=False, seed=42):
         super().__init__()
         self.verbose = verbose
         self.activation_cls = activation
         self.dropout = dropout
+        self.seed = seed
 
         # Encoder
         encoder = []
@@ -328,6 +342,10 @@ class Autoencoder(nn.Module):
             prev_dim = h
         decoder.append(nn.Linear(prev_dim, input_dim))
         self.decoder = nn.Sequential(*decoder)
+
+        # Apply deterministic initialization per layer
+        self.encoder.apply(lambda l: init_weights(l, seed=self.seed))
+        self.decoder.apply(lambda l: init_weights(l, seed=self.seed))
 
     def forward(self, x):
         if self.verbose:
@@ -357,6 +375,7 @@ class Autoencoder(nn.Module):
         if self.verbose:
             print(f"Latent embedding: {x.shape}")
         return x
+
 
 #####################
 
@@ -948,7 +967,7 @@ def plot_latent_space_2d(embeddings, y_test, y_pred, index_df=None, hover_col=No
     df = pd.DataFrame(embeddings_2d, columns=['Dim1', 'Dim2'])
     df['hover'] = index_df[hover_col].values if index_df is not None and hover_col is not None else df.index.astype(str)
 
-    color_map = {0: 'blue', 1: 'red'}
+    color_map = {0: 'lightblue', 1: 'red'}
     label_map = {0: 'Normal', 1: 'Fraud'}
 
     def _add_scatter(fig, labels, row=1, col=1, first_occurrence=False):
@@ -965,7 +984,7 @@ def plot_latent_space_2d(embeddings, y_test, y_pred, index_df=None, hover_col=No
                     x=df.loc[idx, 'Dim1'],
                     y=df.loc[idx, 'Dim2'],
                     mode='markers',
-                    marker=dict(color=color, size=marker_size),
+                    marker=dict(color=color, size=marker_size, opacity=0.3),
                     name=name,
                     legendgroup=name,
                     showlegend=showlegend,
@@ -978,11 +997,16 @@ def plot_latent_space_2d(embeddings, y_test, y_pred, index_df=None, hover_col=No
     # Always assume both y_test and y_pred are provided
     fig = make_subplots(rows=1, cols=2,
                         specs=[[{'type':'xy'}, {'type':'xy'}]],
-                        subplot_titles=("Latent Space (Ground Truth)", "Latent Space (Predicted)"))
+                        subplot_titles=("Latent Space (Y True Flag)", "Latent Space (Y Predicted Flag)"))
     _add_scatter(fig, y_test, row=1, col=1, first_occurrence=True)
     _add_scatter(fig, y_pred, row=1, col=2, first_occurrence=False)
 
-    fig.update_layout(height=500, width=1000)
+    fig.update_layout(
+            height=600,
+            width=1200,
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
     fig.show()
 
 # ----------------- 3D version -----------------
@@ -1006,7 +1030,7 @@ def plot_latent_space_3d(embeddings, y_test, y_pred, index_df=None, hover_col=No
     df = pd.DataFrame(embeddings, columns=['Dim1', 'Dim2', 'Dim3'])
     df['hover'] = index_df[hover_col].values if index_df is not None and hover_col is not None else df.index.astype(str)
 
-    color_map = {0: 'blue', 1: 'red'}
+    color_map = {0: 'lightblue', 1: 'red'}
     label_map = {0: 'Normal', 1: 'Fraud'}
 
     def _add_scatter3d(fig, labels, row=1, col=1, first_occurrence=False):
@@ -1024,7 +1048,7 @@ def plot_latent_space_3d(embeddings, y_test, y_pred, index_df=None, hover_col=No
                     y=df.loc[idx, 'Dim2'],
                     z=df.loc[idx, 'Dim3'],
                     mode='markers',
-                    marker=dict(color=color, size=marker_size),
+                    marker=dict(color=color, size=marker_size, opacity=0.3),
                     name=name,
                     legendgroup=name,
                     showlegend=showlegend,
@@ -1037,10 +1061,15 @@ def plot_latent_space_3d(embeddings, y_test, y_pred, index_df=None, hover_col=No
     # Only handle the case where both y_test and y_pred are provided
     fig = make_subplots(rows=1, cols=2,
                         specs=[[{'type':'scatter3d'}, {'type':'scatter3d'}]],
-                        subplot_titles=("Latent Space (Ground Truth)", "Latent Space (Predicted)"))
+                        subplot_titles=("Latent Space (Y True Flag)", "Latent Space (Y Predicted Flag)"))
     _add_scatter3d(fig, y_test, row=1, col=1, first_occurrence=True)
     _add_scatter3d(fig, y_pred, row=1, col=2, first_occurrence=False)
-    fig.update_layout(height=500, width=1000)
+    fig.update_layout(
+        height=600,
+        width=1200,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
     fig.show()
 
 
