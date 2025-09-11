@@ -1197,7 +1197,69 @@ def evaluate_thresholds(x_scaled,
     )
 
     return results_df
+    
+@timer
+def get_thresholds(recon_error, y_train_all, exp_name="default_all"):
+    """
+    Calculate threshold cutoffs for each percentile (1–100) 
+    using only non-fraud (y=0) reconstruction errors.
+    
+    Returns
+    -------
+    thresholds_df : pd.DataFrame
+        experiment_name | percentile | threshold_value
+    """
+    thresholds = []
+    for p in range(1, 101):  # every percentile from 1 to 100
+        threshold = np.percentile(recon_error[y_train_all == 0], p)
+        experiment_name = f"ae_{exp_name}_p{p}"
+        thresholds.append({
+            # "experiment_name": experiment_name,
+            "percentile": p,
+            "threshold_value": threshold
+        })
 
+    thresholds_df = pd.DataFrame(thresholds)# .set_index("experiment_name")
+    return thresholds_df
+
+@timer
+def map_errors_to_percentiles(recon_error, thresholds_df):
+    """
+    Map each reconstruction error to its corresponding percentile 
+    based on the precomputed threshold cutoffs.
+    
+    Parameters
+    ----------
+    recon_error_all : np.ndarray
+        Array of reconstruction errors (shape: n_samples,).
+    thresholds_df : pd.DataFrame
+        DataFrame with columns ['percentile', 'threshold_value'].
+        Must be sorted by percentile in ascending order.
+    
+    Returns
+    -------
+    percentiles : np.ndarray
+        Array of same shape as recon_error_all, each element is the
+        percentile where the error belongs.
+    """
+    # Ensure sorted
+    thresholds = thresholds_df.sort_values("percentile")
+    cutoffs = thresholds["threshold_value"].values
+    percentiles = thresholds["percentile"].values
+    
+    # For each error, find index of the highest threshold it passes
+    indices = np.searchsorted(cutoffs, recon_error, side="right") - 1
+    
+    # Clip to valid range
+    indices = np.clip(indices, 0, len(percentiles) - 1)
+
+    mapped_percentiles = percentiles[indices].astype(float)
+
+    # Convert percentile to probability
+    probs = mapped_percentiles / 100.0
+    return probs
+
+    
 ################### Pipeline ########################
 # ----------------- Function 1: Training Pipeline -----------------
 @timer
