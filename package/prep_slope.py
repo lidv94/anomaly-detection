@@ -5,41 +5,90 @@ import seaborn as sns
 import re
 from package.utils import profile_data ,DotDict, timer, get_config, load_data, merge_data ,save_file
 
-@timer
-def create_rule_differences(df, rules=None):
-    """
-    Create difference-based features between consecutive lookback windows for each rule.
-    """
-    df_out = df.copy()
+# @timer
+# def create_rule_differences(df, rules=None):
+#     """
+#     Create difference-based features between consecutive lookback windows for each rule.
+#     """
+#     df_out = df.copy()
     
-    # Detect rules if not provided
-    if rules is None:
-        rules = sorted(set([c.split('_l')[0] for c in df.columns if '_l' in c]))
+#     # Detect rules if not provided
+#     if rules is None:
+#         rules = sorted(set([c.split('_l')[0] for c in df.columns if '_l' in c]))
     
-    for rule in rules:
-        # Find rule columns
-        pattern = f"^{rule}_l\\d+$"
-        rule_cols = [c for c in df.columns if re.match(pattern, c)]
-        if not rule_cols:
-            continue
+#     for rule in rules:
+#         # Find rule columns
+#         pattern = f"^{rule}_l\\d+$"
+#         rule_cols = [c for c in df.columns if re.match(pattern, c)]
+#         if not rule_cols:
+#             continue
         
-        # Extract lookback periods
+#         # Extract lookback periods
+#         periods = [int(c.split('_l')[-1]) for c in rule_cols]
+#         sorted_idx = np.argsort(periods)
+        
+#         sorted_cols = np.array(rule_cols)[sorted_idx]
+#         sorted_periods = np.array(periods)[sorted_idx]
+        
+#         # First feature = value from earliest window
+#         first_col = sorted_cols[0]
+#         first_period = sorted_periods[0]
+#         df_out[f"{rule}_l0_l{first_period}"] = df_out[first_col]
+        
+#         # Differences between consecutive windows
+#         for prev_col, next_col, prev_p, next_p in zip(sorted_cols[:-1], sorted_cols[1:], sorted_periods[:-1], sorted_periods[1:]):
+#             new_col = f"{rule}_l{prev_p}_l{next_p}"
+#             df_out[new_col] = df_out[next_col] - df_out[prev_col]
+    
+#     return df_out
+
+@timer
+def create_rule_differences(df, keep_id_cols=['sales_id','expected_dt','y']):
+    """
+    Create difference-based features between consecutive timeframe windows for each rule.
+    
+    Input Example:
+        sales_id expected_dt  apl_l3  apl_l6  apl_l9  y
+        00000001 2025-06-30       3      12     20   0
+        
+    Output Example:
+        sales_id expected_dt  apl_l0_l3  apl_l3_l6  apl_l6_l9  y
+        00000001 2025-06-30           3          9          8  0
+    """
+    if keep_id_cols is None:
+        keep_id_cols = []
+
+    df_out = pd.DataFrame()
+    for col in keep_id_cols:
+        if col in df.columns:
+            df_out[col] = df[col]
+            
+    rules = sorted({col.split('_l')[0] for col in df.columns if '_l' in col})
+
+    for rule in rules:
+        # find all columns for this rule
+        rule_cols = [c for c in df.columns if re.match(rf"^{rule}_l\d+$", c)]
+        if len(rule_cols) < 1:
+            continue
+
+        # extract periods & sort them
         periods = [int(c.split('_l')[-1]) for c in rule_cols]
         sorted_idx = np.argsort(periods)
-        
         sorted_cols = np.array(rule_cols)[sorted_idx]
         sorted_periods = np.array(periods)[sorted_idx]
-        
-        # First feature = value from earliest window
+
+        # first column
         first_col = sorted_cols[0]
         first_period = sorted_periods[0]
-        df_out[f"{rule}_l0_l{first_period}"] = df_out[first_col]
-        
-        # Differences between consecutive windows
-        for prev_col, next_col, prev_p, next_p in zip(sorted_cols[:-1], sorted_cols[1:], sorted_periods[:-1], sorted_periods[1:]):
+        df_out[f"{rule}_l0_l{first_period}"] = df[first_col]
+
+        # differences between consecutive periods
+        for prev_col, next_col, prev_p, next_p in zip(
+            sorted_cols[:-1], sorted_cols[1:], sorted_periods[:-1], sorted_periods[1:]
+        ):
             new_col = f"{rule}_l{prev_p}_l{next_p}"
-            df_out[new_col] = df_out[next_col] - df_out[prev_col]
-    
+            df_out[new_col] = df[next_col] - df[prev_col]
+
     return df_out
 
 @timer
