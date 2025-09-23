@@ -58,37 +58,51 @@ def create_rule_differences(df, keep_id_cols=['sales_id','expected_dt','y']):
     if keep_id_cols is None:
         keep_id_cols = []
 
-    df_out = pd.DataFrame()
-    for col in keep_id_cols:
-        if col in df.columns:
-            df_out[col] = df[col]
-            
-    rules = sorted({col.split('_l')[0] for col in df.columns if '_l' in col})
+    # Start with ID columns
+    df_out = df[keep_id_cols].copy() if keep_id_cols else pd.DataFrame()
+    
+    new_cols = {}  # collect new columns here
+
+    # Detect rules: everything before the last '_l<number>'
+    rules = sorted({
+        re.match(r"^(.*)_l\d+$", col).group(1)
+        for col in df.columns if re.match(r".*_l\d+$", col)
+    })
+    print(f"DEBUG: Detected rules: {rules}")
 
     for rule in rules:
-        # find all columns for this rule
-        rule_cols = [c for c in df.columns if re.match(rf"^{rule}_l\d+$", c)]
-        if len(rule_cols) < 1:
+        escaped_rule = re.escape(rule)
+        rule_cols = [c for c in df.columns if re.match(rf"^{escaped_rule}_l\d+$", c)]
+        if not rule_cols:
+            print(f"DEBUG: No columns found for rule '{rule}', skipping.")
             continue
 
-        # extract periods & sort them
         periods = [int(c.split('_l')[-1]) for c in rule_cols]
         sorted_idx = np.argsort(periods)
         sorted_cols = np.array(rule_cols)[sorted_idx]
         sorted_periods = np.array(periods)[sorted_idx]
 
+        print(f"DEBUG: Processing rule '{rule}' with columns: {sorted_cols}, periods: {sorted_periods}")
+
         # first column
         first_col = sorted_cols[0]
         first_period = sorted_periods[0]
-        df_out[f"{rule}_l0_l{first_period}"] = df[first_col]
+        new_col_name = f"{rule}_l0_l{first_period}"
+        new_cols[new_col_name] = df[first_col]
+        print(f"DEBUG: Created first diff column '{new_col_name}'")
 
-        # differences between consecutive periods
+        # differences
         for prev_col, next_col, prev_p, next_p in zip(
             sorted_cols[:-1], sorted_cols[1:], sorted_periods[:-1], sorted_periods[1:]
         ):
-            new_col = f"{rule}_l{prev_p}_l{next_p}"
-            df_out[new_col] = df[next_col] - df[prev_col]
+            diff_col_name = f"{rule}_l{prev_p}_l{next_p}"
+            new_cols[diff_col_name] = df[next_col] - df[prev_col]
+            print(f"DEBUG: Created diff column '{diff_col_name}' = {next_col} - {prev_col}")
 
+    # Add all new columns at once
+    df_out = pd.concat([df_out, pd.DataFrame(new_cols)], axis=1)
+    print(f"DEBUG: Final output columns: {df_out.columns.tolist()}")
+    
     return df_out
 
 @timer
